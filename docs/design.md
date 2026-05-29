@@ -1,138 +1,60 @@
-# agmsg — Design & Architecture
+# magi Design
 
-Developer documentation for contributors and maintainers.
+## Architecture
 
-## Identity Model
+- CLI: Rust, `clap`, Tokio
+- State directory: `~/.magi`
+- Install locations: `~/.agents/skills/magi/bin/magi`, `~/.local/bin/magi`
+- Redis lifecycle: Docker first, `redis-server` fallback
+- Durable messaging: Redis Streams
+- Wakeups: Redis Pub/Sub
+- Inbox tracking: one Redis cursor per `(team, agent)`
 
-An agent is identified by `(name, team)`. Project path and agent type (claude-code, codex, gemini) are metadata — reference information stored alongside the identity but not part of it.
+## Redis Key Model
 
-- An agent can be registered from multiple projects under the same name
-- `whoami.sh` uses project path and type to suggest an identity, but the user can choose any name
-- See [#15](https://github.com/fujibee/agmsg/issues/15) for the ongoing identity redesign
+All keys use the `magi:` prefix. Team and agent segments are percent-encoded so
+IDs containing separators cannot collide with normal key shapes.
 
-## Data Storage
+Important keys:
 
-### Messages — SQLite
+- `magi:teams`
+- `magi:team:<team>`
+- `magi:team:<team>:agents`
+- `magi:agent:<team>:<agent>`
+- `magi:stream:<team>`
+- `magi:cursor:<team>:<agent>`
+- `magi:pubsub:<team>`
+- `magi:invite:<invite_id>`
+- `magi:invite_token:<token_hash>`
 
-`~/.agents/skills/<cmd>/db/messages.db`
+## Messages
 
-- WAL journal mode for concurrent access (multiple readers + 1 writer)
-- Schema:
-  ```sql
-  CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    team TEXT NOT NULL,
-    from_agent TEXT NOT NULL,
-    to_agent TEXT NOT NULL,
-    body TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    read_at TEXT
-  );
-  ```
-- Indexes on `(team, to_agent, read_at)` for unread queries and `(team, created_at)` for history
+Messages are appended to `magi:stream:<team>` with fields:
 
-### Team Config — JSON
+- `from`
+- `to`
+- `body`
+- `created_at`
 
-`~/.agents/skills/<cmd>/teams/<team>/config.json`
+`magi inbox` reads from the stored cursor, prints messages addressed to the
+active agent, and advances the cursor to the last scanned stream entry.
 
-```json
-{
-  "name": "myteam",
-  "agents": {
-    "alice": { "type": "claude-code", "project": "/path/to/project" }
-  },
-  "created_at": "2026-01-01T00:00:00Z"
-}
-```
+`magi watch` subscribes to `magi:pubsub:<team>` and also polls periodically, so
+missed Pub/Sub wakeups do not lose durable Stream messages.
 
-Manipulated via sqlite3 JSON1 functions (no python3 dependency).
+## Invites
 
-### User Config — YAML
+Invite tokens are generated randomly. Redis stores only a SHA-256 token hash and
+a lookup key with TTL. Joining is guarded by a Lua script so revoked, expired,
+or exhausted invites cannot race through concurrent joins.
 
-`~/.agents/skills/<cmd>/db/config.yaml`
+## SSH
 
-```yaml
-# agmsg configuration
-hook:
-  check_interval: 60  # seconds between inbox checks
-```
+`magi ssh start` creates an SSH local port-forward from the configured
+`ssh.local_port` to `ssh.remote_host:ssh.remote_port` via `ssh.host`, and stores
+the process id under `~/.magi/run`.
 
-Read/written by `config.sh` using awk. Supports dotted keys (`hook.check_interval`).
+## Retired Bash Scripts
 
-## Hook System
-
-Auto message detection uses the host agent's hook mechanism to check for new messages after each response.
-
-### Flow
-
-```
-Agent responds → Stop hook fires → check-inbox.sh runs
-  ├─ Cooldown active? → skip (Codex: JSON systemMessage)
-  ├─ No unread messages? → silent (Codex: JSON systemMessage)
-  └─ Unread messages found:
-       1. Build notification text
-       2. Mark messages as read_at
-       3. Return JSON { "decision": "block", "reason": "..." }
-       4. Agent sees messages in context and continues
-```
-
-### Cooldown
-
-A marker file (`db/.lastcheck-<agent>`) tracks the last check time. Configurable via `hook.check_interval` (default 60 seconds).
-
-### Claude Code vs Codex
-
-| Aspect | Claude Code | Codex |
-|---|---|---|
-| Hook config | `.claude/settings.local.json` | `.codex/hooks.json` |
-| Feature flag | Not needed | `codex_hooks = true` in `config.toml` |
-| Silent output | exit 0 with no output | JSON `{ "continue": true }` |
-| New messages | `decision: "block"` | `decision: "block"` |
-| UI label | "Stop hook error:" ([#2](https://github.com/fujibee/agmsg/issues/2)) | "warning:" ([#2](https://github.com/fujibee/agmsg/issues/2)) |
-
-## Scripts
-
-| Script | Purpose |
-|---|---|
-| `init-db.sh` | Create SQLite database with schema |
-| `send.sh` | Insert a message into the database |
-| `inbox.sh` | Show unread messages and mark as read |
-| `history.sh` | Show message history (newest first, displayed oldest first) |
-| `join.sh` | Add agent to team (create team if needed) |
-| `leave.sh` | Remove agent from team (delete team if empty) |
-| `team.sh` | List team members |
-| `whoami.sh` | Identify agent by project path and type |
-| `rename.sh` | Rename agent in config and message history |
-| `hook.sh` | Enable/disable Stop hook (on/off) |
-| `check-inbox.sh` | Hook entry point — cooldown, check, notify |
-| `config.sh` | Read/write user config (YAML) |
-
-All scripts use only `bash` and `sqlite3`. No python3 dependency.
-
-## Install Layout
-
-```
-~/.agents/skills/<cmd>/
-├── SKILL.md              # Read by Codex (generated from cmd.codex.md template)
-├── agents/
-│   └── openai.yaml       # Codex metadata
-├── scripts/              # All shell scripts
-├── templates/            # Command templates (cmd.claude-code.md, cmd.codex.md)
-├── db/
-│   ├── messages.db       # SQLite message store
-│   ├── config.yaml       # User configuration
-│   └── .lastcheck-*      # Cooldown markers
-└── teams/
-    └── <team>/
-        └── config.json   # Team member registry
-```
-
-Claude Code command is installed separately to `~/.claude/commands/<cmd>.md`.
-
-## Dependencies
-
-- **bash** — shell
-- **sqlite3** — database and JSON manipulation (JSON1 extension)
-- **awk/sed** — text processing (config, TOML editing)
-
-No python3, no node, no network, no daemon.
+The former Bash/SQLite scripts remain only as compatibility stubs. Each exits
+with code `2` and directs callers to the Rust CLI.
