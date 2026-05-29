@@ -116,13 +116,26 @@ source repository.
 
 **NEVER perform operations that affect upstream repository state.**
 
+**NEVER create Pull Requests against upstream.** All Pull Requests for this
+repository MUST be created in the fork repository (`kent8192/magi`) with an
+explicit repository target, for example:
+
+```bash
+gh pr create --repo kent8192/magi --base main --head <branch>
+```
+
+Do not rely on `gh pr create` defaults, because this checkout also has an
+`upstream` remote and GitHub may infer the source repository as the upstream
+project.
+
 Prohibited operations include:
 
 - `git push upstream ...`, including branch pushes, tag pushes, deletions, and
   force pushes.
 - Creating, editing, closing, merging, labeling, or commenting on upstream
   Issues, Pull Requests, Discussions, Releases, or Actions runs.
-- Creating Pull Requests whose base repository is upstream.
+- Creating Pull Requests whose base repository is upstream, including
+  cross-repository PRs from `kent8192/magi` to `fujibee/agmsg`.
 - Running `gh` commands against upstream, including `gh -R fujibee/agmsg ...`,
   unless the command is strictly read-only.
 - Triggering, re-running, canceling, approving, or otherwise modifying upstream
