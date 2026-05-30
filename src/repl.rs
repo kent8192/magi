@@ -23,16 +23,26 @@ pub async fn run() -> Result<()> {
             return Ok(());
         }
 
-        match parse_repl_command(&line)? {
-            ReplCommand::Inbox => crate::messaging::inbox().await?,
-            ReplCommand::Send { to, body } => {
-                crate::messaging::send(to, vec![body]).await?;
+        let command = match parse_repl_command(&line) {
+            Ok(command) => command,
+            Err(error) => {
+                // Keep the session alive on invalid input instead of exiting.
+                eprintln!("{error}");
+                continue;
             }
-            ReplCommand::History { agent } => {
-                crate::messaging::history(None, agent).await?;
-            }
-            ReplCommand::Team => crate::team::members(None).await?,
+        };
+
+        let result = match command {
+            ReplCommand::Inbox => crate::messaging::inbox().await,
+            ReplCommand::Send { to, body } => crate::messaging::send(to, vec![body]).await,
+            ReplCommand::History { agent } => crate::messaging::history(None, agent).await,
+            ReplCommand::Team => crate::team::members(None).await,
             ReplCommand::Quit => return Ok(()),
+        };
+
+        if let Err(error) = result {
+            // Surface transient command failures without terminating the session.
+            eprintln!("{error}");
         }
     }
 }

@@ -67,19 +67,35 @@ pub async fn members(name: Option<String>) -> Result<()> {
 
 pub async fn create_team_with_url(url: &str, team: &str, owner: &str) -> Result<()> {
     let keys = RedisKeys::new(team);
-    let now = unix_timestamp_string();
     let mut connection = redis_client::connect(url).await?;
-    let mut pipe = redis::pipe();
 
+    // Claim the team name atomically. SADD reports how many members were newly
+    // added, so a return of 0 means the team already exists and we must not
+    // overwrite its owner or timestamps.
+    let added: i64 = connection.sadd(keys.teams(), team).await?;
+    if added == 0 {
+        return Err(MagiError::InvalidConfig(format!(
+            "team `{team}` already exists"
+        )));
+    }
+
+    let now = unix_timestamp_string();
+    let mut pipe = redis::pipe();
     pipe.atomic()
-        .sadd(keys.teams(), team)
         .hset(keys.team(), "name", team)
         .hset(keys.team(), "owner", owner)
         .hset(keys.team(), "created_at", &now)
         .hset(keys.team(), "updated_at", &now);
     add_agent_registration_to_pipe(&mut pipe, &keys, owner, "owner", "", &now, &now);
 
-    let _: () = pipe.query_async(&mut connection).await?;
+    let result: redis::RedisResult<()> = pipe.query_async(&mut connection).await;
+    if let Err(error) = result {
+        // Roll back the team-name claim so the partially created team can be
+        // recreated by a later attempt.
+        let _: redis::RedisResult<i64> = connection.srem(keys.teams(), team).await;
+        return Err(error.into());
+    }
+
     Ok(())
 }
 

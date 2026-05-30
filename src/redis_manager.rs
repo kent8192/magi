@@ -60,6 +60,16 @@ pub trait RedisRuntime {
         &'a mut self,
         plan: &'a CommandPlan,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn container_exists<'a>(
+        &'a mut self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>;
+
+    fn process_executable<'a>(
+        &'a mut self,
+        pid: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + 'a>>;
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +105,20 @@ impl RedisRuntime for RealRedisRuntime {
         plan: &'a CommandPlan,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move { run_command(plan).await })
+    }
+
+    fn container_exists<'a>(
+        &'a mut self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>> {
+        Box::pin(async move { docker_container_exists(name).await })
+    }
+
+    fn process_executable<'a>(
+        &'a mut self,
+        pid: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + 'a>> {
+        Box::pin(async move { process_executable(pid).await })
     }
 }
 
@@ -196,6 +220,12 @@ pub async fn stop_with_runtime(
 ) -> Result<()> {
     match config.redis.mode {
         RedisMode::Docker => {
+            // Treat a missing container as a no-op so `stop` stays idempotent,
+            // mirroring the redis-server branch's "nothing to stop" handling.
+            if !runtime.container_exists(CONTAINER_NAME).await? {
+                println!("Docker Redis container {CONTAINER_NAME} not found; nothing to stop");
+                return Ok(());
+            }
             let plan = docker_stop_plan();
             runtime.run_command(&plan).await?;
             println!("Stopped Docker Redis container {CONTAINER_NAME}");
@@ -219,12 +249,34 @@ pub async fn stop_with_runtime(
                 return Ok(());
             };
 
+            // Verify the recorded pid still belongs to redis-server before
+            // signalling it. A stale pid file could otherwise name a reused pid
+            // and terminate an unrelated process.
+            match runtime.process_executable(pid).await? {
+                None => {
+                    remove_file_if_exists(&plan.pid_file)?;
+                    println!(
+                        "redis-server pid {pid} from {} is not running; removed stale pid file",
+                        plan.pid_file.display()
+                    );
+                    return Ok(());
+                }
+                Some(executable) if !is_redis_server_executable(&executable) => {
+                    return Err(MagiError::CommandFailed(format!(
+                        "pid {pid} from {} is `{executable}`, not redis-server; refusing to kill",
+                        plan.pid_file.display()
+                    )));
+                }
+                Some(_) => {}
+            }
+
             runtime
                 .run_command(&CommandPlan {
                     program: plan.program,
                     args: vec![pid.to_string()],
                 })
                 .await?;
+            remove_file_if_exists(&plan.pid_file)?;
             println!("Stopped redis-server using {}", plan.pid_file.display());
         }
         RedisMode::External => {
@@ -443,8 +495,8 @@ fn is_sensitive_arg_name(arg: &str) -> bool {
 }
 
 async fn start_docker(paths: &ConfigPaths, bind: &str, port: u16, password: &str) -> Result<()> {
-    fs::create_dir_all(&paths.redis_dir)?;
-    fs::create_dir_all(&paths.redis_data_dir)?;
+    create_private_dir(&paths.redis_dir)?;
+    create_private_dir(&paths.redis_data_dir)?;
     write_private_redis_config_file(
         &docker_redis_config_file(paths),
         docker_redis_config_contents(password).as_bytes(),
@@ -473,9 +525,9 @@ async fn start_redis_server(
     port: u16,
     password: &str,
 ) -> Result<()> {
-    fs::create_dir_all(&paths.redis_dir)?;
-    fs::create_dir_all(&paths.redis_data_dir)?;
-    fs::create_dir_all(&paths.run_dir)?;
+    create_private_dir(&paths.redis_dir)?;
+    create_private_dir(&paths.redis_data_dir)?;
+    create_private_dir(&paths.run_dir)?;
 
     let plan = build_redis_server_start_plan(paths, bind, port, password)?;
     write_private_redis_config_file(&plan.config_file, plan.config_contents.as_bytes())?;
@@ -515,6 +567,74 @@ async fn run_command_allow_failure(plan: &CommandPlan) -> Result<()> {
         .stderr(Stdio::null())
         .status()
         .await?;
+    Ok(())
+}
+
+async fn docker_container_exists(name: &str) -> Result<bool> {
+    // `docker container inspect` exits non-zero when the container is absent,
+    // so its status lets us detect existence without parsing localized output.
+    let status = Command::new("docker")
+        .args(["container", "inspect", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await?;
+    Ok(status.success())
+}
+
+async fn process_executable(pid: u32) -> Result<Option<String>> {
+    // Resolve the executable backing a pid so callers can confirm a recorded
+    // pid still belongs to redis-server. Returns None when the pid is gone.
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let comm = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if comm.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(comm))
+    }
+}
+
+fn is_redis_server_executable(executable: &str) -> bool {
+    // `ps -o comm=` returns a bare name on Linux and may return a full path on
+    // macOS, so compare on the file name component.
+    Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("redis-server"))
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(path)?;
+    // Keep managed Redis data and runtime files private on shared hosts.
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
     Ok(())
 }
 

@@ -16,10 +16,14 @@ struct FakeRuntime {
     redis_server_result: Option<Result<()>>,
     ping_result: Option<Result<()>>,
     command_results: Vec<Result<()>>,
+    container_exists_result: Option<Result<bool>>,
+    process_executable_result: Option<Result<Option<String>>>,
     docker_starts: Vec<CommandPlan>,
     redis_server_starts: Vec<CommandPlan>,
     pings: Vec<String>,
     commands: Vec<CommandPlan>,
+    container_exists_calls: Vec<String>,
+    process_executable_calls: Vec<u32>,
 }
 
 impl FakeRuntime {
@@ -82,6 +86,28 @@ impl RedisRuntime for FakeRuntime {
             } else {
                 self.command_results.remove(0)
             }
+        })
+    }
+
+    fn container_exists<'a>(
+        &'a mut self,
+        name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>> {
+        Box::pin(async move {
+            self.container_exists_calls.push(name.to_string());
+            self.container_exists_result.take().unwrap_or(Ok(true))
+        })
+    }
+
+    fn process_executable<'a>(
+        &'a mut self,
+        pid: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + 'a>> {
+        Box::pin(async move {
+            self.process_executable_calls.push(pid);
+            self.process_executable_result
+                .take()
+                .unwrap_or_else(|| Ok(Some("redis-server".to_string())))
         })
     }
 }
@@ -379,6 +405,31 @@ async fn stop_docker_mode_runs_docker_remove_force_plan() {
         .expect("stop docker");
 
     assert_eq!(runtime.commands, vec![docker_stop_plan()]);
+    assert_eq!(
+        runtime.container_exists_calls,
+        vec!["magi-redis".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn stop_docker_mode_missing_container_is_noop() {
+    let (_temp, paths) = temp_paths();
+    let mut config = AppConfig::default();
+    config.redis.mode = RedisMode::Docker;
+    let mut runtime = FakeRuntime {
+        container_exists_result: Some(Ok(false)),
+        ..FakeRuntime::default()
+    };
+
+    stop_with_runtime(&paths, &config, &mut runtime)
+        .await
+        .expect("stop docker without container");
+
+    assert!(runtime.commands.is_empty());
+    assert_eq!(
+        runtime.container_exists_calls,
+        vec!["magi-redis".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -400,6 +451,60 @@ async fn stop_redis_server_mode_reads_pid_file_and_kills_pid() {
             program: "kill".to_string(),
             args: vec!["12345".to_string()],
         }]
+    );
+    assert_eq!(runtime.process_executable_calls, vec![12345]);
+    assert!(
+        !redis_server_pid_file(&paths).exists(),
+        "pid file should be removed after a successful stop"
+    );
+}
+
+#[tokio::test]
+async fn stop_redis_server_mode_removes_stale_pid_file_when_process_is_gone() {
+    let (_temp, paths) = temp_paths();
+    std::fs::create_dir_all(&paths.run_dir).expect("run dir");
+    std::fs::write(redis_server_pid_file(&paths), "12345\n").expect("pid file");
+    let mut config = AppConfig::default();
+    config.redis.mode = RedisMode::RedisServer;
+    let mut runtime = FakeRuntime {
+        process_executable_result: Some(Ok(None)),
+        ..FakeRuntime::default()
+    };
+
+    stop_with_runtime(&paths, &config, &mut runtime)
+        .await
+        .expect("stop redis-server with stale pid");
+
+    assert!(runtime.commands.is_empty());
+    assert!(
+        !redis_server_pid_file(&paths).exists(),
+        "stale pid file should be removed"
+    );
+}
+
+#[tokio::test]
+async fn stop_redis_server_mode_refuses_to_kill_foreign_process() {
+    let (_temp, paths) = temp_paths();
+    std::fs::create_dir_all(&paths.run_dir).expect("run dir");
+    std::fs::write(redis_server_pid_file(&paths), "12345\n").expect("pid file");
+    let mut config = AppConfig::default();
+    config.redis.mode = RedisMode::RedisServer;
+    let mut runtime = FakeRuntime {
+        process_executable_result: Some(Ok(Some("bash".to_string()))),
+        ..FakeRuntime::default()
+    };
+
+    let error = stop_with_runtime(&paths, &config, &mut runtime)
+        .await
+        .expect_err("foreign pid must not be killed");
+
+    assert!(
+        matches!(error, MagiError::CommandFailed(message) if message.contains("refusing to kill"))
+    );
+    assert!(runtime.commands.is_empty());
+    assert!(
+        redis_server_pid_file(&paths).exists(),
+        "pid file must be preserved when the process is not ours"
     );
 }
 

@@ -31,11 +31,26 @@ pub async fn start() -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let child = Command::new(&plan.program).args(&plan.args).spawn()?;
-    let pid = child
-        .id()
-        .ok_or_else(|| MagiError::CommandFailed("failed to capture ssh pid".to_string()))?;
-    fs::write(&plan.pid_file, pid.to_string())?;
+    let mut child = Command::new(&plan.program).args(&plan.args).spawn()?;
+    let pid = match child.id() {
+        Some(pid) => pid,
+        None => {
+            // The tunnel exited before we could record it; reap it so it does
+            // not linger as a zombie.
+            let _ = child.kill().await;
+            return Err(MagiError::CommandFailed(
+                "failed to capture ssh pid".to_string(),
+            ));
+        }
+    };
+
+    if let Err(error) = fs::write(&plan.pid_file, pid.to_string()) {
+        // Do not leave an unmanaged tunnel running when its pid cannot be
+        // persisted; without the pid file `stop` could never reach it.
+        let _ = child.kill().await;
+        return Err(error.into());
+    }
+
     println!("ssh tunnel started pid={pid}");
     Ok(())
 }
