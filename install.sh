@@ -22,17 +22,26 @@ fi
 
 echo "magi — Redis-backed agent messaging"
 echo "building release binary..."
-CARGO_TARGET_DIR="$SCRIPT_DIR/target" cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
+# Build into a temporary directory so the repository is not polluted with
+# build artifacts; clean it up on exit regardless of success or failure.
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/magi-build.XXXXXX")"
+cleanup() {
+  rm -rf "$BUILD_DIR"
+}
+trap cleanup EXIT
+CARGO_TARGET_DIR="$BUILD_DIR" cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 
 mkdir -p "$SKILL_DIR/bin" "$SKILL_DIR/templates" "$SKILL_DIR/agents" "$HOME/.local/bin" "$HOME/.magi"
-install -m 0755 "$SCRIPT_DIR/target/release/magi" "$SKILL_BIN"
-install -m 0755 "$SCRIPT_DIR/target/release/magi" "$LOCAL_CLI"
+install -m 0755 "$BUILD_DIR/release/magi" "$SKILL_BIN"
+install -m 0755 "$BUILD_DIR/release/magi" "$LOCAL_CLI"
 
 sed "s/__SKILL_NAME__/magi/g" "$SCRIPT_DIR/templates/cmd.codex.md" > "$SKILL_DIR/SKILL.md"
 for tmpl in "$SCRIPT_DIR/templates/"cmd.*.md; do
   sed "s/__SKILL_NAME__/magi/g" "$tmpl" > "$SKILL_DIR/templates/$(basename "$tmpl")"
 done
-cp "$SCRIPT_DIR/openai.yaml" "$SKILL_DIR/agents/openai.yaml" 2>/dev/null || true
+if [ -f "$SCRIPT_DIR/openai.yaml" ]; then
+  cp "$SCRIPT_DIR/openai.yaml" "$SKILL_DIR/agents/openai.yaml"
+fi
 
 if [ -d "$HOME/.claude" ]; then
   mkdir -p "$HOME/.claude/commands"
