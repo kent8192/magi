@@ -1,0 +1,59 @@
+scripts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+installer:
+  - changed-files:
+      - any-glob-to-any-file:
+          - install.sh
+          - setup.sh
+          - uninstall.sh
+
+templates:
+  - changed-files:
+      - any-glob-to-any-file:
+          - templates/**
+          - openai.yaml
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - README.md
+          - SKILL.md
+          - AGENTS.md
+          - CLAUDE.md
+          - "*.md"
+
+database:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/init-db.sh
+          - scripts/config.sh
+          - scripts/identities.sh
+
+delivery:
+  - changed-files:
+      - any-glob-to-any-file:
+          - scripts/delivery.sh
+          - scripts/hook.sh
+          - scripts/check-inbox.sh
+          - scripts/watch.sh
+          - scripts/session-start.sh
+          - scripts/session-end.sh
+
+ci-cd:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+github-actions:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
