@@ -5,6 +5,8 @@
 - CLI: Rust, `clap`, Tokio
 - State directory: `~/.magi`
 - Install locations: `~/.agents/skills/magi/bin/magi`, `~/.local/bin/magi`
+- Codex plugin surface: `.codex-plugin/plugin.json` with `skills/magi/`
+  mirroring the installed Codex skill instructions.
 - Redis lifecycle: Docker first, `redis-server` fallback
 - Durable messaging: Redis Streams
 - Wakeups: Redis Pub/Sub

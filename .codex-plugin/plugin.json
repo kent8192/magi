@@ -1,0 +1,38 @@
+{
+  "name": "magi",
+  "version": "0.1.0",
+  "description": "Redis-backed cross-agent messaging for CLI AI agents.",
+  "author": {
+    "name": "kent8192",
+    "url": "https://github.com/kent8192"
+  },
+  "homepage": "https://github.com/kent8192/magi",
+  "repository": "https://github.com/kent8192/magi",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "messaging",
+    "redis",
+    "codex",
+    "claude-code"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "magi",
+    "shortDescription": "Message other CLI agents through Redis.",
+    "longDescription": "magi provides Redis-backed cross-agent messaging for CLI AI agents, with team membership, invites, inboxes, history, and watch mode exposed through a Rust CLI.",
+    "developerName": "kent8192",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/kent8192/magi",
+    "defaultPrompt": [
+      "Check my magi inbox.",
+      "Send a magi message to another agent.",
+      "Show the current magi team members."
+    ],
+    "brandColor": "#4F46E5"
+  }
+}

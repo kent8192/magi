@@ -19,6 +19,13 @@ The installer builds the Rust binary and places it at:
 
 Configuration and managed Redis state are stored under `~/.magi`.
 
+## Codex Plugin
+
+This repository also includes a Codex plugin manifest at
+`.codex-plugin/plugin.json`. The plugin exposes the same `magi` skill behavior
+as the installed Codex skill metadata and points agents to the Rust CLI at
+`~/.agents/skills/magi/bin/magi`.
+
 ## Quick Start
 
 ```bash
