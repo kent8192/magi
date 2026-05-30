@@ -1,3 +1,16 @@
+//! Integration tests for the `magi::proc` module.
+//!
+//! These tests verify the two pure process-helper utilities:
+//!
+//! - `parse_pid_file_contents` — reads a PID file's raw text and converts it to a positive
+//!   `u32`, returning `None` for blank files and `Err(MagiError::InvalidConfig)` for
+//!   zero, negative, or non-numeric values.
+//! - `executable_basename_is` — checks whether the basename of a process command path
+//!   matches an expected name exactly (prefix/suffix mismatches are rejected), used by
+//!   the managed-Redis lifecycle to guard `kill` calls against stale or recycled PIDs.
+//!
+//! No Redis instance, network, or filesystem I/O is required; all tests run offline.
+
 use magi::error::MagiError;
 use magi::proc::{executable_basename_is, parse_pid_file_contents};
 

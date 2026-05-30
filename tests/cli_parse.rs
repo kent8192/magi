@@ -1,3 +1,21 @@
+//! CLI argument-parsing tests for `magi`.
+//!
+//! These tests exercise [`magi::cli::Cli`] via [`clap::Parser::try_parse_from`], verifying that
+//! every subcommand and its flags are wired up correctly.  No Redis server is required; the suite
+//! is purely in-process and runs offline.
+//!
+//! Coverage areas:
+//! - No-subcommand invocation (falls through to interactive REPL mode).
+//! - `redis` subcommands: `start` (with and without `--lan`/`--bind`), `status`, `stop`.
+//! - `invite` subcommands: `create` (explicit and default TTL), `list`, `revoke`.
+//! - `team` subcommands: `create`, `list`, `members` (with and without `--team` filter).
+//! - `send` (multi-word message tail, missing-message rejection).
+//! - `join` (with `--invite`, missing-invite rejection).
+//! - `history` (with and without optional `--team`/`--agent` filters).
+//! - `inbox`, `watch` (line/json format, invalid-format rejection).
+//! - `config get`/`config set`.
+//! - `install`, `ssh start`/`status`/`stop`.
+
 use clap::Parser;
 use magi::cli::{
     Cli, Command, ConfigCommand, InviteCommand, RedisCommand, SshCommand, TeamCommand, WatchFormat,
@@ -82,6 +100,7 @@ fn parses_invite_create_with_ttl() {
 
 #[test]
 fn parses_invite_create_default_ttl() {
+    // When `--ttl` is omitted the clap default must be `"24h"`.
     let cli = Cli::try_parse_from(["magi", "invite", "create", "--team", "core"]).expect("parse");
 
     let Some(Command::Invite {
@@ -111,6 +130,7 @@ fn parses_invite_list_requires_team() {
 
 #[test]
 fn rejects_invite_list_without_team() {
+    // `--team` is required for `invite list`; omitting it must produce a parse error.
     let error = Cli::try_parse_from(["magi", "invite", "list"]);
     assert!(error.is_err());
 }
@@ -181,6 +201,8 @@ fn parses_team_members_without_team_filter() {
 
 #[test]
 fn parses_send_message_tail() {
+    // The message body is a variadic trailing argument: all words after the recipient
+    // are collected into the `message` Vec in order.
     let cli = Cli::try_parse_from(["magi", "send", "bob", "deploy", "is", "done"]).expect("parse");
     let Some(Command::Send { to, message }) = cli.command else {
         panic!("expected send");
@@ -192,6 +214,7 @@ fn parses_send_message_tail() {
 
 #[test]
 fn rejects_send_without_message_word() {
+    // At least one message word is required; a bare `send <to>` must be rejected.
     let error = Cli::try_parse_from(["magi", "send", "bob"]);
     assert!(error.is_err());
 }
@@ -208,6 +231,7 @@ fn parses_join_with_invite() {
 
 #[test]
 fn rejects_join_without_invite() {
+    // `--invite` is mandatory for the `join` subcommand.
     let error = Cli::try_parse_from(["magi", "join"]);
     assert!(error.is_err());
 }
@@ -265,6 +289,7 @@ fn parses_watch_json_format() {
 
 #[test]
 fn rejects_invalid_watch_format() {
+    // Only `line` and `json` are accepted by `WatchFormat`; any other value must fail.
     let error = Cli::try_parse_from(["magi", "watch", "--format", "xml"]);
     assert!(error.is_err());
 }
