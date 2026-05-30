@@ -1,0 +1,122 @@
+# Label definitions for the magi/agmsg repository.
+
+# Type labels.
+- name: bug
+  color: d73a4a
+  description: Confirmed bug or unexpected behavior
+
+- name: enhancement
+  color: a2eeef
+  description: New feature or improvement request
+
+- name: documentation
+  color: 0075ca
+  description: Documentation issues or improvements
+
+- name: question
+  color: d876e3
+  description: Usage or implementation question
+
+- name: ci-cd
+  color: 2cbe4e
+  description: CI/CD workflow issues or improvements
+
+- name: security
+  color: ee0701
+  description: Security vulnerabilities or hardening work
+
+- name: refactoring
+  color: ededed
+  description: Code refactoring without behavior changes
+
+- name: code-quality
+  color: ededed
+  description: Code quality improvements
+
+- name: breaking-change
+  color: b60205
+  description: Breaking changes that require migration
+
+# Priority labels.
+- name: critical
+  color: b60205
+  description: Critical priority - blocks release or safe use
+
+- name: high
+  color: d93f0b
+  description: High priority - important fix or feature
+
+- name: medium
+  color: fbca04
+  description: Medium priority - normal priority
+
+- name: low
+  color: 0e8a16
+  description: Low priority - minor fix or improvement
+
+# Status labels.
+- name: good first issue
+  color: 7057ff
+  description: Suitable for new contributors
+
+- name: help wanted
+  color: 008672
+  description: Community contributions welcome
+
+- name: duplicate
+  color: cfd3d7
+  description: Duplicate of another issue
+
+- name: invalid
+  color: e4e669
+  description: Not a valid issue
+
+- name: wontfix
+  color: ffffff
+  description: Will not be fixed
+
+- name: needs more info
+  color: fef2c0
+  description: Awaiting additional information
+
+# Scope labels.
+- name: scripts
+  color: ededed
+  description: Shell scripts and command behavior
+
+- name: tests
+  color: ededed
+  description: BATS tests and test helpers
+
+- name: installer
+  color: ededed
+  description: Install, update, setup, or uninstall behavior
+
+- name: templates
+  color: ededed
+  description: Claude Code or Codex command templates
+
+- name: docs
+  color: ededed
+  description: README, design docs, or skill documentation
+
+- name: database
+  color: ededed
+  description: SQLite schema, queries, or stored state behavior
+
+- name: delivery
+  color: ededed
+  description: Hook, watcher, or delivery-mode behavior
+
+- name: github-actions
+  color: 2cbe4e
+  description: GitHub Actions workflow files
+
+# Process labels.
+- name: dependencies
+  color: 0366d6
+  description: Dependency or tooling updates
+
+- name: process
+  color: cfd3d7
+  description: Process and workflow improvements

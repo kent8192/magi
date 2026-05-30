@@ -1,0 +1,6 @@
+name: "magi CodeQL Configuration"
+
+paths-ignore:
+  - "db/"
+  - "teams/"
+  - "docs/superpowers/"

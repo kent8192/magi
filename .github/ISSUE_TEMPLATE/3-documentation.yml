@@ -1,0 +1,41 @@
+name: Documentation
+description: Report documentation issues or suggest improvements
+labels: ["documentation"]
+
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues for a duplicate report.
+          required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Documentation Location
+      description: Which document or section needs work?
+      placeholder: README.md, docs/design.md, SKILL.md, templates/cmd.codex.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current Problem
+      description: Explain what is missing, stale, incorrect, or unclear.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: Describe the expected correction or new content.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add related commands, screenshots, or links.

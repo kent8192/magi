@@ -1,0 +1,47 @@
+name: CI/CD Issue
+description: Report a GitHub Actions or repository automation issue
+title: "[CI]: "
+labels: ["ci-cd"]
+
+body:
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Affected Workflow
+      options:
+        - ci.yml
+        - codeql.yml
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Issue Description
+      description: Describe the workflow problem.
+    validations:
+      required: true
+
+  - type: input
+    id: run-url
+    attributes:
+      label: Workflow Run URL
+      description: Link to the failed or surprising workflow run.
+      placeholder: https://github.com/kent8192/magi/actions/runs/1234567890
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Paste the smallest useful log excerpt.
+      render: shell
+
+  - type: textarea
+    id: local-results
+    attributes:
+      label: Local Results
+      description: Include local command results if applicable.
+      placeholder: |
+        bash -n scripts/*.sh install.sh setup.sh uninstall.sh
+        bats tests/

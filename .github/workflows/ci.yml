@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  shell-syntax:
+    name: Shell Syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check shell syntax
+        run: bash -n scripts/*.sh install.sh setup.sh uninstall.sh
+
+  bats:
+    name: BATS Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats sqlite3
+
+      - name: Run BATS test suite
+        run: bats tests/
+
+  docs-sync:
+    name: AGENTS and CLAUDE Sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Verify mirrored agent instructions
+        run: |
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          normalize() {
+            local input="$1"
+            local output="$2"
+            sed \
+              -e 's/AGENTS\.local\.md/LOCAL_AGENT_FILE/g' \
+              -e 's/CLAUDE\.local\.md/LOCAL_AGENT_FILE/g' \
+              -e 's/AGENTS\.md/AGENT_FILE/g' \
+              -e 's/CLAUDE\.md/AGENT_FILE/g' \
+              -e 's/Codex/AGENT_NAME/g' \
+              -e 's/Claude Code/AGENT_NAME/g' \
+              "$input" > "$output"
+          }
+
+          normalize AGENTS.md "$tmpdir/AGENTS.normalized"
+          normalize CLAUDE.md "$tmpdir/CLAUDE.normalized"
+          diff -u "$tmpdir/CLAUDE.normalized" "$tmpdir/AGENTS.normalized"

@@ -1,0 +1,48 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+
+body:
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues for a similar request.
+          required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the requested capability.
+      placeholder: I would like agmsg to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Explain the workflow or problem this would improve.
+      placeholder: I am trying to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Behavior
+      description: Describe the desired command, script behavior, or user flow.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any workarounds or alternative designs.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Add examples, links, or constraints.
