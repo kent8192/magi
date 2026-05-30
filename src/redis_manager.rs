@@ -118,7 +118,7 @@ impl RedisRuntime for RealRedisRuntime {
         &'a mut self,
         pid: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>>> + 'a>> {
-        Box::pin(async move { process_executable(pid).await })
+        Box::pin(async move { crate::proc::executable_name(pid).await })
     }
 }
 
@@ -241,7 +241,9 @@ pub async fn stop_with_runtime(
             }
 
             // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path - pid file is fixed under HOME/.magi/run.
-            let Some(pid) = parse_pid_file_contents(&fs::read_to_string(&plan.pid_file)?)? else {
+            let Some(pid) =
+                crate::proc::parse_pid_file_contents(&fs::read_to_string(&plan.pid_file)?)?
+            else {
                 println!(
                     "redis-server pid file at {} is empty; nothing to stop",
                     plan.pid_file.display()
@@ -254,14 +256,16 @@ pub async fn stop_with_runtime(
             // and terminate an unrelated process.
             match runtime.process_executable(pid).await? {
                 None => {
-                    remove_file_if_exists(&plan.pid_file)?;
+                    crate::proc::remove_file_if_exists(&plan.pid_file)?;
                     println!(
                         "redis-server pid {pid} from {} is not running; removed stale pid file",
                         plan.pid_file.display()
                     );
                     return Ok(());
                 }
-                Some(executable) if !is_redis_server_executable(&executable) => {
+                Some(executable)
+                    if !crate::proc::executable_basename_is(&executable, "redis-server") =>
+                {
                     return Err(MagiError::CommandFailed(format!(
                         "pid {pid} from {} is `{executable}`, not redis-server; refusing to kill",
                         plan.pid_file.display()
@@ -276,7 +280,7 @@ pub async fn stop_with_runtime(
                     args: vec![pid.to_string()],
                 })
                 .await?;
-            remove_file_if_exists(&plan.pid_file)?;
+            crate::proc::remove_file_if_exists(&plan.pid_file)?;
             println!("Stopped redis-server using {}", plan.pid_file.display());
         }
         RedisMode::External => {
@@ -285,26 +289,6 @@ pub async fn stop_with_runtime(
     }
 
     Ok(())
-}
-
-fn parse_pid_file_contents(contents: &str) -> Result<Option<u32>> {
-    let trimmed = contents.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    let pid = trimmed.parse::<u32>().map_err(|_| {
-        MagiError::InvalidConfig(
-            "redis-server pid file must contain a positive integer".to_string(),
-        )
-    })?;
-    if pid == 0 {
-        return Err(MagiError::InvalidConfig(
-            "redis-server pid file must contain a positive integer".to_string(),
-        ));
-    }
-
-    Ok(Some(pid))
 }
 
 pub fn build_docker_start_plan(
@@ -581,45 +565,6 @@ async fn docker_container_exists(name: &str) -> Result<bool> {
         .status()
         .await?;
     Ok(status.success())
-}
-
-async fn process_executable(pid: u32) -> Result<Option<String>> {
-    // Resolve the executable backing a pid so callers can confirm a recorded
-    // pid still belongs to redis-server. Returns None when the pid is gone.
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let comm = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if comm.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(comm))
-    }
-}
-
-fn is_redis_server_executable(executable: &str) -> bool {
-    // `ps -o comm=` returns a bare name on Linux and may return a full path on
-    // macOS, so compare on the file name component.
-    Path::new(executable)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("redis-server"))
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 #[cfg(unix)]

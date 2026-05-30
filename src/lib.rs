@@ -5,6 +5,7 @@ pub mod install;
 pub mod invite;
 pub mod messaging;
 pub mod model;
+pub mod proc;
 pub mod redis_client;
 pub mod redis_manager;
 pub mod repl;
