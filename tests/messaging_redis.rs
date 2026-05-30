@@ -1,10 +1,10 @@
 //! Integration tests for Redis-backed messaging in magi.
 //!
 //! These tests exercise the full send / inbox / history flow against a live
-//! Redis server.  They are **opt-in**: each async test checks for the
-//! `MAGI_TEST_REDIS_URL` environment variable and silently skips when it is
-//! absent.  Setting `MAGI_REQUIRE_REDIS_TESTS=1` turns a missing URL into a
-//! hard panic so CI can enforce that the variable is configured.
+//! Redis server.  Each test takes the `redis_fixture` rstest fixture, which
+//! starts a throwaway Redis container via testcontainers and hands the test an
+//! isolated, empty instance that is torn down when the test ends.  Docker must
+//! be available for these tests to run.
 //!
 //! ## What is covered
 //!
@@ -32,33 +32,9 @@ use magi::model::RedisKeys;
 use magi::team::{create_team_with_url, register_agent_with_url};
 use redis::AsyncCommands;
 
-/// Resolves a Redis URL from an explicit value and a "require" flag.
-///
-/// Returns `None` when `url` is absent or blank and `require_redis_tests` is
-/// `false`.  Panics when `url` is absent/blank and `require_redis_tests` is
-/// `true`, so CI configurations that set `MAGI_REQUIRE_REDIS_TESTS=1` fail
-/// loudly rather than silently skipping every Redis-backed test.
-fn redis_url_from_values(url: Option<String>, require_redis_tests: bool) -> Option<String> {
-    let url = url.filter(|url| !url.trim().is_empty());
-
-    if url.is_none() && require_redis_tests {
-        panic!("MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set");
-    }
-
-    url
-}
-
-/// Reads the Redis URL and the "require" flag from environment variables.
-///
-/// Looks up `MAGI_TEST_REDIS_URL` and `MAGI_REQUIRE_REDIS_TESTS`, then
-/// delegates to [`redis_url_from_values`].  Returns `None` when
-/// `MAGI_TEST_REDIS_URL` is unset or empty and the require flag is not `"1"`.
-fn redis_url_from_env() -> Option<String> {
-    redis_url_from_values(
-        std::env::var("MAGI_TEST_REDIS_URL").ok(),
-        std::env::var("MAGI_REQUIRE_REDIS_TESTS").as_deref() == Ok("1"),
-    )
-}
+mod common;
+use common::{redis_fixture, RedisFixture};
+use rstest::rstest;
 
 /// Generates a test-scoped unique name by combining `prefix` with a
 /// pseudo-UUID derived from the current PID and a nanosecond timestamp.
@@ -98,24 +74,12 @@ async fn redis_connection(url: &str) -> redis::aio::MultiplexedConnection {
         .expect("redis connection")
 }
 
-#[test]
-fn redis_url_helper_skips_when_url_is_missing_and_not_required() {
-    assert_eq!(redis_url_from_values(None, false), None);
-    assert_eq!(redis_url_from_values(Some("   ".to_string()), false), None);
-}
-
-#[test]
-#[should_panic(expected = "MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set")]
-fn redis_url_helper_panics_when_redis_tests_are_required_without_url() {
-    let _ = redis_url_from_values(None, true);
-}
-
+#[rstest]
 #[tokio::test]
-async fn send_appends_stream_event_and_publishes_wakeup() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn send_appends_stream_event_and_publishes_wakeup(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-send");
     let alice = unique_name("alice");
     let bob = unique_name("bob");
@@ -170,12 +134,12 @@ async fn send_appends_stream_event_and_publishes_wakeup() {
     assert_eq!(payload, message.id);
 }
 
+#[rstest]
 #[tokio::test]
-async fn send_rejects_unknown_recipient_without_writing_stream() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn send_rejects_unknown_recipient_without_writing_stream(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-missing-to");
     let alice = unique_name("alice");
 
@@ -196,12 +160,10 @@ async fn send_rejects_unknown_recipient_without_writing_stream() {
     assert!(!exists);
 }
 
+#[rstest]
 #[tokio::test]
-async fn send_rejects_blank_message_body() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn send_rejects_blank_message_body(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let error = send_message_with_url(&url, "team", "alice", "bob", "   ")
         .await
         .expect_err("blank message should fail");
@@ -209,12 +171,12 @@ async fn send_rejects_blank_message_body() {
     assert!(matches!(error, MagiError::InvalidConfig(message) if message.contains("message body")));
 }
 
+#[rstest]
 #[tokio::test]
-async fn inbox_returns_target_messages_once_and_advances_cursor() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn inbox_returns_target_messages_once_and_advances_cursor(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-inbox");
     let alice = unique_name("alice");
     let bob = unique_name("bob");
@@ -261,12 +223,10 @@ async fn inbox_returns_target_messages_once_and_advances_cursor() {
     assert_eq!(cursor, expected.id);
 }
 
+#[rstest]
 #[tokio::test]
-async fn inbox_peek_does_not_advance_cursor() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn inbox_peek_does_not_advance_cursor(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-peek");
     let alice = unique_name("alice");
     let bob = unique_name("bob");
@@ -291,12 +251,12 @@ async fn inbox_peek_does_not_advance_cursor() {
     assert_eq!(peek[0].id, after_peek[0].id);
 }
 
+#[rstest]
 #[tokio::test]
-async fn inbox_advances_over_non_target_messages_without_returning_them() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn inbox_advances_over_non_target_messages_without_returning_them(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-skip");
     let alice = unique_name("alice");
     let bob = unique_name("bob");
@@ -329,12 +289,12 @@ async fn inbox_advances_over_non_target_messages_without_returning_them() {
     assert_eq!(cursor, skipped.id);
 }
 
+#[rstest]
 #[tokio::test]
-async fn history_can_return_all_messages_or_filter_by_agent() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn history_can_return_all_messages_or_filter_by_agent(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-history");
     let alice = unique_name("alice");
     let bob = unique_name("bob");
@@ -365,12 +325,10 @@ async fn history_can_return_all_messages_or_filter_by_agent() {
         .all(|message| message.event.from == bob || message.event.to == bob));
 }
 
+#[rstest]
 #[tokio::test]
-async fn history_missing_stream_returns_empty_list() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn history_missing_stream_returns_empty_list(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-msg-empty-history");
 
     let messages = history_with_url(&url, &team, None).await.unwrap();

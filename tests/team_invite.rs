@@ -4,14 +4,15 @@
 //! creation, joining, listing members, revocation, expiry, max-use enforcement,
 //! and security properties (token hash storage, lookup-key cleanup).
 //!
-//! # Gating
+//! # Redis provisioning
 //!
-//! All Redis-backed tests are skipped when `MAGI_TEST_REDIS_URL` is unset.
-//! Set `MAGI_REQUIRE_REDIS_TESTS=1` to turn the skip into a hard failure, which
-//! is useful in CI environments where Redis is expected to be available.
+//! All Redis-backed tests take the `redis_fixture` rstest fixture, which starts
+//! an ephemeral Redis container via testcontainers (Docker required) and tears
+//! it down when the test ends -- no external Redis or environment variable is
+//! needed.
 //!
 //! ```text
-//! MAGI_TEST_REDIS_URL=redis://127.0.0.1:6379 cargo test -p magi --test team_invite
+//! cargo test -p magi --test team_invite
 //! ```
 
 use std::time::Duration;
@@ -25,34 +26,9 @@ use magi::model::RedisKeys;
 use magi::team::{create_team_with_url, list_members_with_url, register_agent_with_url};
 use redis::AsyncCommands;
 
-/// Resolves the Redis URL from the supplied `url` value and the `require_redis_tests` flag.
-///
-/// Returns `None` when `url` is absent or blank and `require_redis_tests` is `false`,
-/// allowing callers to skip the test gracefully.
-///
-/// # Panics
-///
-/// Panics when `url` is absent or blank and `require_redis_tests` is `true`, so that
-/// CI environments which set `MAGI_REQUIRE_REDIS_TESTS=1` surface a clear failure instead
-/// of silently skipping all Redis-backed tests.
-fn redis_url_from_values(url: Option<String>, require_redis_tests: bool) -> Option<String> {
-    let url = url.filter(|url| !url.trim().is_empty());
-
-    if url.is_none() && require_redis_tests {
-        panic!("MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set");
-    }
-
-    url
-}
-
-/// Reads `MAGI_TEST_REDIS_URL` and `MAGI_REQUIRE_REDIS_TESTS` from the process environment
-/// and delegates to [`redis_url_from_values`].
-fn redis_url_from_env() -> Option<String> {
-    redis_url_from_values(
-        std::env::var("MAGI_TEST_REDIS_URL").ok(),
-        std::env::var("MAGI_REQUIRE_REDIS_TESTS").as_deref() == Ok("1"),
-    )
-}
+mod common;
+use common::{redis_fixture, RedisFixture};
+use rstest::rstest;
 
 /// Returns a name that is unique within the current test run by combining `prefix`
 /// with the output of [`uuidish`].  Used to isolate team and agent names across
@@ -109,18 +85,6 @@ fn is_clear_revoked_rejection(error: MagiError) -> bool {
 
 // --- Unit tests for pure helpers (no Redis required) ---
 
-#[test]
-fn redis_url_helper_skips_when_url_is_missing_and_not_required() {
-    assert_eq!(redis_url_from_values(None, false), None);
-    assert_eq!(redis_url_from_values(Some("   ".to_string()), false), None);
-}
-
-#[test]
-#[should_panic(expected = "MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set")]
-fn redis_url_helper_panics_when_redis_tests_are_required_without_url() {
-    let _ = redis_url_from_values(None, true);
-}
-
 /// Verifies that `parse_ttl` accepts the `h`, `m`, and `s` duration suffixes and
 /// converts them to the correct number of seconds.
 #[test]
@@ -144,12 +108,12 @@ fn ttl_parser_rejects_invalid_values() {
 
 /// Happy-path test covering the complete invite lifecycle:
 /// create team → create invite → join with invite → list members → revoke → reject late join.
+#[rstest]
 #[tokio::test]
-async fn create_invite_join_list_members_and_revoke_flow() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn create_invite_join_list_members_and_revoke_flow(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-flow");
     let owner = unique_name("owner");
     let agent = unique_name("agent");
@@ -186,12 +150,12 @@ async fn create_invite_join_list_members_and_revoke_flow() {
 /// Verifies that calling `register_agent_with_url` twice with identical arguments
 /// is idempotent: the member list contains exactly one entry for the agent and the
 /// registration set in Redis holds a single `"runtime:project"` value.
+#[rstest]
 #[tokio::test]
-async fn re_registering_same_agent_project_does_not_duplicate_members() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn re_registering_same_agent_project_does_not_duplicate_members(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-idempotent");
     let agent = unique_name("agent");
 
@@ -219,12 +183,10 @@ async fn re_registering_same_agent_project_does_not_duplicate_members() {
     assert_eq!(registrations, vec!["codex:/tmp/project-a".to_string()]);
 }
 
+#[rstest]
 #[tokio::test]
-async fn invalid_invite_token_is_rejected() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn invalid_invite_token_is_rejected(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
 
     let error = join_with_url(&url, "not-a-real-token", "agent", "codex", "/tmp/project")
         .await
@@ -233,12 +195,10 @@ async fn invalid_invite_token_is_rejected() {
     assert!(matches!(error, MagiError::NotFound(message) if message.contains("invite token")));
 }
 
+#[rstest]
 #[tokio::test]
-async fn revoked_invite_is_rejected() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn revoked_invite_is_rejected(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-revoked");
     let owner = unique_name("owner");
 
@@ -264,12 +224,12 @@ async fn revoked_invite_is_rejected() {
 /// This is a white-box test that directly writes the `revoked_at` field into Redis
 /// without going through `revoke_invite_with_url`, so it exercises the marker-check
 /// branch independently of the lookup-deletion branch.
+#[rstest]
 #[tokio::test]
-async fn revoked_marker_is_rejected_when_lookup_still_exists() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn revoked_marker_is_rejected_when_lookup_still_exists(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-revoked-marker");
     let owner = unique_name("owner");
 
@@ -300,12 +260,10 @@ async fn revoked_marker_is_rejected_when_lookup_still_exists() {
 /// Verifies that `revoke_invite_with_url` scopes revocation to the owning team:
 /// attempting to revoke team A's invite via team B must fail with `NotFound` and
 /// must leave both the lookup key and the invite hash (`revoked_at` absent) intact.
+#[rstest]
 #[tokio::test]
-async fn wrong_team_revoke_fails_and_keeps_lookup() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn wrong_team_revoke_fails_and_keeps_lookup(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team_a = unique_name("team-boundary-a");
     let team_b = unique_name("team-boundary-b");
     let owner = unique_name("owner");
@@ -345,12 +303,12 @@ async fn wrong_team_revoke_fails_and_keeps_lookup() {
 /// The test deliberately pollutes team B's invite-ID set with an ID that was
 /// created under team A, then asserts that `list_invites_with_url` for team B
 /// does not surface the foreign invite.
+#[rstest]
 #[tokio::test]
-async fn list_invites_filters_out_invites_from_other_teams() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn list_invites_filters_out_invites_from_other_teams(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team_a = unique_name("team-list-a");
     let team_b = unique_name("team-list-b");
     let owner = unique_name("owner");
@@ -382,12 +340,10 @@ async fn list_invites_filters_out_invites_from_other_teams() {
 /// Verifies that an invite whose Redis key has expired (TTL elapsed) is rejected
 /// at join time.  A 1-second TTL is used and the test sleeps 1 200 ms to ensure
 /// the key has expired before attempting to join.
+#[rstest]
 #[tokio::test]
-async fn expired_invite_is_rejected() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn expired_invite_is_rejected(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-expired");
     let owner = unique_name("owner");
 
@@ -408,12 +364,10 @@ async fn expired_invite_is_rejected() {
 /// Verifies that an invite with `max_uses = 1` allows exactly one successful join
 /// and rejects a subsequent join attempt with an `InvalidConfig` error mentioning
 /// "maximum uses".
+#[rstest]
 #[tokio::test]
-async fn max_uses_one_prevents_second_join() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn max_uses_one_prevents_second_join(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-max-uses");
     let owner = unique_name("owner");
 
@@ -448,12 +402,12 @@ async fn max_uses_one_prevents_second_join() {
 /// `InvalidConfig("maximum uses …")`, and the stored `used_count` is exactly 1.
 /// This validates that the Redis atomic increment + compare prevents double-spending
 /// under concurrent load.
+#[rstest]
 #[tokio::test]
-async fn max_uses_one_allows_exactly_one_concurrent_join() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn max_uses_one_allows_exactly_one_concurrent_join(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-max-uses-race");
     let owner = unique_name("owner");
 
@@ -516,12 +470,12 @@ async fn max_uses_one_allows_exactly_one_concurrent_join() {
 ///    written to the invite hash, and the `token` field is absent.
 /// 2. Revoking an invite deletes the global lookup key so that the token can no
 ///    longer be resolved even if an attacker retains the plaintext token.
+#[rstest]
 #[tokio::test]
-async fn invite_stores_only_token_hash_and_revoke_deletes_lookup() {
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn invite_stores_only_token_hash_and_revoke_deletes_lookup(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     let team = unique_name("team-security");
     let owner = unique_name("owner");
 

@@ -12,10 +12,9 @@
 //!
 //! # Redis-backed tests
 //!
-//! Tests that require a live Redis server are skipped by default.  Set the environment variable
-//! `MAGI_TEST_REDIS_URL` to a valid Redis URL (e.g. `redis://127.0.0.1:6379`) to enable them.
-//! If `MAGI_REQUIRE_REDIS_TESTS=1` is also set, the test binary will panic rather than silently
-//! skip when `MAGI_TEST_REDIS_URL` is absent, making it suitable for CI enforcement.
+//! Tests that require a live Redis server take the `redis_fixture` rstest fixture,
+//! which starts an ephemeral Redis container via testcontainers (Docker required)
+//! and tears it down when the test ends.
 
 use magi::cli::WatchFormat;
 use magi::messaging::send_message_with_url;
@@ -23,36 +22,9 @@ use magi::repl::{parse_repl_command, ReplCommand};
 use magi::team::{create_team_with_url, register_agent_with_url};
 use magi::watch::{format_watch_message, watch_once_with_url};
 
-/// Resolves a Redis URL from explicitly supplied values, enforcing the CI hard-fail gate.
-///
-/// Returns `None` when `url` is absent or blank and `require_redis_tests` is `false`,
-/// allowing callers to skip Redis-backed tests gracefully.
-///
-/// # Panics
-///
-/// Panics when `url` is `None` (or blank) and `require_redis_tests` is `true`, so that CI
-/// jobs which set `MAGI_REQUIRE_REDIS_TESTS=1` fail loudly instead of silently skipping.
-fn redis_url_from_values(url: Option<String>, require_redis_tests: bool) -> Option<String> {
-    let url = url.filter(|url| !url.trim().is_empty());
-
-    if url.is_none() && require_redis_tests {
-        panic!("MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set");
-    }
-
-    url
-}
-
-/// Reads the Redis URL and the hard-fail gate flag from environment variables.
-///
-/// Returns the value of `MAGI_TEST_REDIS_URL` when it is non-empty, or `None` when the
-/// variable is unset/blank.  If `MAGI_REQUIRE_REDIS_TESTS=1` is set and the URL is absent
-/// the call delegates to `redis_url_from_values`, which panics.
-fn redis_url_from_env() -> Option<String> {
-    redis_url_from_values(
-        std::env::var("MAGI_TEST_REDIS_URL").ok(),
-        std::env::var("MAGI_REQUIRE_REDIS_TESTS").as_deref() == Ok("1"),
-    )
-}
+mod common;
+use common::{redis_fixture, RedisFixture};
+use rstest::rstest;
 
 /// Creates a unique name by appending a pseudo-UUID to `prefix`.
 ///
@@ -169,15 +141,13 @@ fn watch_formats_json_messages_with_escaping() {
 /// the second call returns an empty list because the Redis Stream consumer position has been
 /// advanced past the message.
 ///
-/// This test is skipped when `MAGI_TEST_REDIS_URL` is not set.  Set `MAGI_REQUIRE_REDIS_TESTS=1`
 /// to promote the skip to a hard failure in CI.
+#[rstest]
 #[tokio::test]
-async fn watch_once_returns_new_messages_and_marks_them_read() {
-    // Skip gracefully when no Redis URL is configured; fail loudly when MAGI_REQUIRE_REDIS_TESTS=1.
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn watch_once_returns_new_messages_and_marks_them_read(
+    #[future(awt)] redis_fixture: RedisFixture,
+) {
+    let url = redis_fixture.url().to_string();
     // Use unique names so concurrent test runs on a shared Redis do not interfere.
     let team = unique_name("team-watch-once");
     let alice = unique_name("alice");

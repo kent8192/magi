@@ -8,13 +8,16 @@
 //!   and preservation of dashes and underscores.
 //! - **Model** (`message_event_*`): verifies `MessageEvent` equality and TOML round-trip.
 //! - **Error** (`magi_error_*`): checks `MagiError` `Display` formatting.
-//! - **Connectivity** (async): tests that require a real Redis instance are gated by the
-//!   `MAGI_TEST_REDIS_URL` environment variable.  When the variable is absent the test prints
-//!   a notice and returns early.  Set `MAGI_REQUIRE_REDIS_TESTS=1` together with
-//!   `MAGI_TEST_REDIS_URL` to make missing-URL an immediate panic instead of a skip.
+//! - **Connectivity** (async): tests that require a real Redis instance take the
+//!   `redis_fixture` rstest fixture, which provisions an ephemeral Redis container
+//!   via testcontainers (Docker required).
 
 use magi::error::MagiError;
 use magi::model::{MessageEvent, RedisKeys, REDIS_KEY_PREFIX};
+
+mod common;
+use common::{redis_fixture, RedisFixture};
+use rstest::rstest;
 
 /// Verifies that every `RedisKeys` accessor returns its canonical `magi:<segment>` form and
 /// that `REDIS_KEY_PREFIX` is exactly `"magi"`.
@@ -154,68 +157,21 @@ async fn ping_rejects_unreachable_local_port() {
     assert!(error.is_err());
 }
 
-/// Returns the Redis URL to use for live tests, enforcing the opt-in gate.
-///
-/// `url` is the raw value of `MAGI_TEST_REDIS_URL` (blank/whitespace-only counts as absent).
-/// `require_redis_tests` reflects whether `MAGI_REQUIRE_REDIS_TESTS=1` is set.
-/// Returns `None` when no URL is present and the tests are optional (normal CI skip path).
-/// Panics when `require_redis_tests` is `true` but no URL is provided, so CI jobs that
-/// explicitly provision Redis never silently skip live coverage.
-fn redis_url_from_values(url: Option<String>, require_redis_tests: bool) -> Option<String> {
-    // Treat blank/whitespace-only values the same as a missing variable.
-    let url = url.filter(|url| !url.trim().is_empty());
-
-    if url.is_none() && require_redis_tests {
-        panic!("MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set");
-    }
-
-    url
-}
-
-/// Reads `MAGI_TEST_REDIS_URL` and `MAGI_REQUIRE_REDIS_TESTS` from the environment and
-/// delegates to `redis_url_from_values` to apply the skip-vs-panic gate.
-fn redis_url_from_env() -> Option<String> {
-    redis_url_from_values(
-        std::env::var("MAGI_TEST_REDIS_URL").ok(),
-        std::env::var("MAGI_REQUIRE_REDIS_TESTS").as_deref() == Ok("1"),
-    )
-}
-
-#[test]
-fn redis_url_helper_skips_when_url_is_missing_and_not_required() {
-    assert_eq!(redis_url_from_values(None, false), None);
-    assert_eq!(redis_url_from_values(Some("   ".to_string()), false), None);
-}
-
-#[test]
-#[should_panic(expected = "MAGI_REQUIRE_REDIS_TESTS=1 requires MAGI_TEST_REDIS_URL to be set")]
-fn redis_url_helper_panics_when_redis_tests_are_required_without_url() {
-    let _ = redis_url_from_values(None, true);
-}
-
 /// Verifies that `ping` succeeds against a real Redis server.
-/// Skipped unless `MAGI_TEST_REDIS_URL` is set in the environment.
+#[rstest]
 #[tokio::test]
-async fn ping_configured_redis() {
-    // Skip gracefully when no live Redis URL is configured.
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn ping_configured_redis(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
 
     magi::redis_client::ping(&url).await.unwrap();
 }
 
 /// Verifies that `publish` on a Pub/Sub channel succeeds even when no subscriber is present.
 /// Redis `PUBLISH` returns the number of receivers (zero here), which should not be an error.
-/// Skipped unless `MAGI_TEST_REDIS_URL` is set in the environment.
+#[rstest]
 #[tokio::test]
-async fn publish_succeeds_without_subscribers() {
-    // Skip gracefully when no live Redis URL is configured.
-    let Some(url) = redis_url_from_env() else {
-        eprintln!("skipping Redis-backed test; MAGI_TEST_REDIS_URL is not set");
-        return;
-    };
+async fn publish_succeeds_without_subscribers(#[future(awt)] redis_fixture: RedisFixture) {
+    let url = redis_fixture.url().to_string();
 
     magi::redis_client::publish(&url, "magi:test:publish", "hello")
         .await
