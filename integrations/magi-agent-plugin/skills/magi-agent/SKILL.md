@@ -34,7 +34,7 @@ magi send ──▶ Redis Pub/Sub ──▶ `magi watch --format json`
 
 - `bin/magi-agentd` — lifecycle controller (`setup|start|stop|restart|status|logs|run`).
 - `lib/magi_agent_bridge.py` — the asyncio bridge built on `claude-agent-sdk`.
-- `commands/magi-agent.md` — the `/magi-agent` slash command wrapping the controller.
+- `commands/magi-system.md` — the `/magi-system` slash command wrapping the controller.
 
 Runtime state (virtualenv, pid, log) lives under
 `${XDG_STATE_HOME:-~/.local/state}/magi-agent/`, never inside the plugin.
@@ -46,10 +46,10 @@ magi redis start                                   # backend must be reachable
 magi config set identity.active_agent <you>        # the agent the bridge speaks as
 magi config set identity.active_team <team>
 
-/magi-agent setup     # one-time: builds an isolated venv + installs the SDK
-/magi-agent start     # launches the daemon
-/magi-agent status    # running? identity? recent log
-/magi-agent stop
+/magi-system setup     # one-time: builds an isolated venv + installs the SDK
+/magi-system start     # launches the daemon
+/magi-system status    # running? identity? recent log
+/magi-system stop
 ```
 
 From another agent, send a message to `<you>` and the bridge replies automatically.
@@ -101,8 +101,8 @@ prefer a narrow `MAGI_AGENT_ALLOWED_TOOLS` set and a non-interactive
 
 ## Troubleshooting
 
-- `start` fails immediately → run `/magi-agent status` and read the log tail; usual
+- `start` fails immediately → run `/magi-system status` and read the log tail; usual
   causes are `identity.active_agent` unset or `magi redis status` unreachable.
 - No replies → check scope/allowlist, and confirm the sender isn't your own agent
   name (self-messages are ignored by design).
-- Verify the SDK loop in the foreground with `/magi-agent run` (Ctrl-C to stop).
+- Verify the SDK loop in the foreground with `/magi-system run` (Ctrl-C to stop).

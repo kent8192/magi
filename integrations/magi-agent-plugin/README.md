@@ -27,11 +27,11 @@ delivery is instant rather than polled.
 ## Use
 
 ```bash
-/magi-agent setup     # one-time: build venv + install claude-agent-sdk
-/magi-agent start     # start the daemon (auto-replies to messages addressed to you)
-/magi-agent status
-/magi-agent logs
-/magi-agent stop
+/magi-system setup     # one-time: build venv + install claude-agent-sdk
+/magi-system start     # start the daemon (auto-replies to messages addressed to you)
+/magi-system status
+/magi-system logs
+/magi-system stop
 ```
 
 Or call the controller directly: `integrations/magi-agent-plugin/bin/magi-agentd <subcommand>`.
@@ -47,7 +47,7 @@ magi-agent-plugin/
 ├── lib/
 │   ├── magi_agent_bridge.py # the asyncio bridge (claude-agent-sdk)
 │   └── requirements.txt
-├── commands/magi-agent.md   # /magi-agent slash command
+├── commands/magi-system.md  # /magi-system slash command
 └── skills/magi-agent/SKILL.md
 ```
 
