@@ -74,6 +74,8 @@ type Config = {
   model: string | undefined;
   maxReplyChars: number;
   maxPeers: number;
+  maxPending: number;
+  logBodies: boolean;
   cwd: string;
   cliPath: string | undefined;
   settingSources: string[];
@@ -178,6 +180,8 @@ function loadConfig(): Config {
     model: process.env.MAGI_AGENT_MODEL || undefined,
     maxReplyChars: Number.parseInt(process.env.MAGI_AGENT_MAX_REPLY_CHARS || "4000", 10),
     maxPeers: Number.parseInt(process.env.MAGI_AGENT_MAX_PEERS || "8", 10),
+    maxPending: Number.parseInt(process.env.MAGI_AGENT_MAX_PENDING || "100", 10),
+    logBodies: envTruthy(process.env.MAGI_AGENT_LOG_BODIES, false),
     cwd: process.env.MAGI_AGENT_CWD || homedir(),
     cliPath: which("claude"),
     settingSources,
@@ -280,7 +284,13 @@ class PeerSession {
     let assistantText = "";
     while (true) {
       const { value, done } = await this.iterator.next();
-      if (done) break;
+      if (done) {
+        // The SDK stream ended before delivering a `result` for this turn. The
+        // underlying query()/iterator is now exhausted and must NOT be reused;
+        // throwing lets the caller drop this peer's session so the next message
+        // opens a fresh one.
+        throw new Error("Claude session stream ended without a result (iterator exhausted)");
+      }
       const msg = value as SDKMessage;
       if (msg.type === "assistant") {
         const content = (msg as { message?: { content?: unknown } }).message?.content;
@@ -296,7 +306,6 @@ class PeerSession {
         return (typeof result === "string" ? result : assistantText).trim();
       }
     }
-    return assistantText.trim();
   }
 
   close(): void {
@@ -332,6 +341,14 @@ class PeerSessions {
     this.sessions.set(peer, session);
     log(`opened persistent session for peer=${peer}`);
     return session;
+  }
+
+  drop(peer: string): void {
+    const session = this.sessions.get(peer);
+    if (session) {
+      session.close();
+      this.sessions.delete(peer);
+    }
   }
 
   closeAll(): void {
@@ -383,6 +400,11 @@ async function main(): Promise<void> {
   const sessions = new PeerSessions(config);
   const queue = makePushable<MagiMessage>();
   let stopping = false;
+  // Backpressure: bound the number of queued-but-unprocessed messages. When the
+  // backlog reaches maxPending we pause reading `magi watch` (the OS pipe / Redis
+  // stream then buffer) and resume once the worker drains below the threshold.
+  let pending = 0;
+  let readerPaused = false;
 
   // Long-lived `magi watch` subprocess. Inherit stderr (the controller logs it)
   // rather than buffering an undrained pipe that could fill and stall.
@@ -416,22 +438,44 @@ async function main(): Promise<void> {
       log(`skipping non-JSON line: ${text.slice(0, 120)}`);
       return;
     }
-    if (shouldHandle(config, msg)) queue.push(msg);
-    else log(`ignored id=${msg.id} from=${msg.from} to=${msg.to}`);
+    if (!shouldHandle(config, msg)) {
+      log(`ignored id=${msg.id} from=${msg.from} to=${msg.to}`);
+      return;
+    }
+    queue.push(msg);
+    pending += 1;
+    if (pending >= config.maxPending && !readerPaused) {
+      readerPaused = true;
+      rl.pause();
+      log(`backpressure: paused reader (pending=${pending} >= ${config.maxPending})`);
+    }
   });
 
   // Serial worker: one turn at a time.
   for await (const msg of queue.iterable) {
+    pending -= 1;
+    if (readerPaused && pending < config.maxPending) {
+      readerPaused = false;
+      rl.resume();
+      log(`backpressure: resumed reader (pending=${pending})`);
+    }
+    const sender = msg.from || "";
     try {
-      const sender = msg.from || "";
       const body = msg.body || "";
-      log(`handling message id=${msg.id} from=${sender}: ${JSON.stringify(body.slice(0, 80))}`);
+      // Do NOT log message bodies by default — the daemon log is plain text and
+      // tailing it would expose message contents. Gate behind MAGI_AGENT_LOG_BODIES.
+      log(
+        `handling message id=${msg.id} from=${sender}` +
+          (config.logBodies ? `: ${JSON.stringify(body.slice(0, 80))}` : ""),
+      );
       const session = sessions.get(sender);
       const reply = await session.ask(body);
       if (config.autoReply && reply) await sendReply(config, sender, reply);
       else if (!reply) log(`empty reply for peer=${sender}; nothing sent`);
     } catch (err) {
       log(`error handling message id=${msg.id}: ${err}`);
+      // Drop a broken/exhausted session so the next message opens a fresh one.
+      sessions.drop(sender);
     }
   }
 

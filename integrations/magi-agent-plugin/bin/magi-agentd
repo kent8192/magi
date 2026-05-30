@@ -48,12 +48,25 @@ ensure_ready() {
   fi
 }
 
+# Verify the PID's process is actually this bridge, not an unrelated process
+# that reused the PID after a crash (stale pid file). Match the bridge path in
+# the process command line.
+pid_matches_bridge() {
+  local pid="$1" args
+  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  case "$args" in
+    *"$BRIDGE"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_running() {
   [ -f "$PID_FILE" ] || return 1
   local pid
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null
+  kill -0 "$pid" 2>/dev/null || return 1
+  pid_matches_bridge "$pid"
 }
 
 cmd_setup() {

@@ -96,6 +96,8 @@ turn's response boundary is unambiguous.
 | `MAGI_AGENT_MODEL` | SDK default | Model id override |
 | `MAGI_AGENT_MAX_REPLY_CHARS` | `4000` | Truncate outgoing replies to this length |
 | `MAGI_AGENT_MAX_PEERS` | `8` | Max concurrent persistent peer sessions |
+| `MAGI_AGENT_MAX_PENDING` | `100` | Max queued-but-unprocessed messages before the reader pauses (backpressure) |
+| `MAGI_AGENT_LOG_BODIES` | `0` | Log message bodies (truncated) for debugging; off by default so the log never persists message contents |
 | `MAGI_AGENT_CWD` | `~` | Working directory for the Claude session |
 | `MAGI_AGENT_SETTING_SOURCES` | (lean, none) | Comma list of `user,project,local` settings to load; default is none so the bot ignores your global CLAUDE.md |
 | `MAGI_AGENT_NODE` | `node` | Node binary used to run the bridge (needs ≥22.18) |
