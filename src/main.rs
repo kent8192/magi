@@ -12,7 +12,7 @@
 //! magi redis {start|status|stop}   → redis_manager::*
 //! magi team  {create|list|members} → team::*
 //! magi invite {create|list|revoke} → invite::*
-//! magi join <invite>           → invite::join()
+//! magi join --invite <TOKEN>   → invite::join()
 //! magi send <to> <message>     → messaging::send()
 //! magi inbox                   → messaging::inbox()
 //! magi history                 → messaging::history()

@@ -189,7 +189,7 @@ pub async fn revoke(invite_id: String) -> Result<()> {
     Ok(())
 }
 
-/// CLI entry point for `magi invite join`: redeems an invite token to join a team.
+/// CLI entry point for `magi join`: redeems an invite token to join a team.
 ///
 /// Derives the joining agent's name from the active identity (defaulting to
 /// `"agent"`) and records the current working directory as the project context.
