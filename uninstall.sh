@@ -97,6 +97,10 @@ for SKILL_DIR in "${SKILL_DIRS[@]}"; do
 
       # Remove only agmsg hook entries from settings files (preserve other hooks)
       SKILL_NAME="$(basename "$SKILL_DIR")"
+      # Escape single quotes before interpolating the skill name into the
+      # in-memory SQLite queries below, so a directory name cannot break out of
+      # the SQL string literal.
+      SKILL_NAME_ESC="$(printf '%s' "$SKILL_NAME" | sed "s/'/''/g")"
       for settings_file in "$project/.claude/settings.json" "$project/.claude/settings.local.json"; do
         if [ -f "$settings_file" ] && grep -q "$SKILL_NAME" "$settings_file" 2>/dev/null; then
           SETTINGS_ESC=$(sed "s/'/''/g" "$settings_file")
@@ -108,7 +112,7 @@ for SKILL_DIR in "${SKILL_DIRS[@]}"; do
               ) WHERE NOT EXISTS (
                 SELECT 1 FROM hook_types, json_each(json_extract('$SETTINGS_ESC', '\$.hooks.' || ht)) AS e,
                   json_each(json_extract(e.value, '\$.hooks')) AS h
-                WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME') > 0
+                WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME_ESC') > 0
               )),
               (SELECT CASE
                 WHEN (SELECT count(*) FROM json_each(json_extract(filtered, '\$.hooks'))
@@ -123,14 +127,14 @@ for SKILL_DIR in "${SKILL_DIRS[@]}"; do
                     FROM json_each(json_extract('$SETTINGS_ESC', '\$.hooks.Stop')) AS e
                     WHERE NOT EXISTS (
                       SELECT 1 FROM json_each(json_extract(e.value, '\$.hooks')) AS h
-                      WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME') > 0
+                      WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME_ESC') > 0
                     )), json('[]'))),
                   '\$.hooks.PostToolUse',
                   COALESCE((SELECT json_group_array(json(e.value))
                     FROM json_each(json_extract('$SETTINGS_ESC', '\$.hooks.PostToolUse')) AS e
                     WHERE NOT EXISTS (
                       SELECT 1 FROM json_each(json_extract(e.value, '\$.hooks')) AS h
-                      WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME') > 0
+                      WHERE instr(json_extract(h.value, '\$.command'), '$SKILL_NAME_ESC') > 0
                     )), json('[]'))) AS filtered
               ))
             );

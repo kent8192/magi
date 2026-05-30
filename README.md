@@ -1,263 +1,71 @@
-# agmsg
+# magi
 
-Cross-agent messaging for CLI AI agents. No daemon, no network, no complexity.
+Redis-backed cross-agent messaging for CLI AI agents.
 
-Claude Code, Codex, Gemini CLI, and any CLI agent can message each other via a shared SQLite database.
-
-Two `monitor`-mode Claude Code instances, left alone in the same team, play tic-tac-toe against each other with no human in the loop — each picks up the other's move in real time:
-
-![Two Claude Code agents autonomously playing tic-tac-toe over agmsg](docs/agmsg-demo.gif)
-
-In real use it looks like this — Claude Code asking Codex for a code review and getting it back, all over agmsg:
-
-![Claude Code and Codex exchanging code review messages via agmsg](docs/screenshot.png)
-
-## Quick Start
-
-```bash
-# 1. Install (one-liner)
-bash <(curl -fsSL https://raw.githubusercontent.com/fujibee/agmsg/main/setup.sh)
-
-# Or clone first if you want to inspect the code
-git clone https://github.com/fujibee/agmsg.git && cd agmsg && ./install.sh
-
-# 2. Restart Claude Code / Codex to pick up the new skill
-
-# 3. Run the command — it will prompt for team and agent name on first use
-#    Claude Code:  /agmsg
-#    Codex:        $agmsg
-```
-
-That's it. Once two agents have joined the same team, they can message each other. On first join, you'll be asked to pick a **delivery mode** — see [Delivery modes](#delivery-modes) below for the four options. The default on Claude Code is `monitor` (real-time push); Codex defaults to `turn` (between-turns check) because it has no Monitor tool.
-
-After setup, your agent handles everything — just talk to it naturally. "Send alice a message saying the deploy is done", "check my messages", "who's on the team" all work. The shell scripts below are for reference and advanced use.
+magi is a Rust CLI that stores team membership, invites, message history, and
+per-agent inbox cursors in Redis. Redis Streams are the durable message log and
+Pub/Sub is used as a low-latency wakeup for `watch`.
 
 ## Install
 
 ```bash
-./install.sh              # Interactive (asks command name, default: agmsg)
-./install.sh --cmd m      # Non-interactive with custom command name
+./install.sh
 ```
 
-The **command name** determines:
-- Skill folder: `~/.agents/skills/<cmd>/`
-- Claude Code: `/<cmd>`
-- Codex: `$<cmd>`
+The installer builds the Rust binary and places it at:
 
-After install, **restart your agent** (Claude Code / Codex) so it picks up the new skill.
+- `~/.agents/skills/magi/bin/magi`
+- `~/.local/bin/magi`
 
-## Join a Team
+Configuration and managed Redis state are stored under `~/.magi`.
 
-Agents join teams by **identity**: `(agent name, team)`. Projects are stored as registration metadata, so the same agent can re-join from multiple projects without creating duplicate identities. The easiest way:
-
-1. Open Claude Code in your project
-2. Run `/<cmd>` (e.g. `/agmsg`)
-3. It detects you're not in a team and asks for team name and agent name
-
-Or join manually:
+## Quick Start
 
 ```bash
-~/.agents/skills/agmsg/scripts/join.sh myteam alice claude-code /path/to/project
+~/.local/bin/magi redis start
+~/.local/bin/magi config set identity.active_agent alice
+~/.local/bin/magi team create core
+~/.local/bin/magi config set identity.active_team core
+~/.local/bin/magi invite create --team core
 ```
 
-To leave a team:
+On another agent:
 
 ```bash
-~/.agents/skills/agmsg/scripts/leave.sh myteam alice
+~/.local/bin/magi config set redis.url <redis-url>
+~/.local/bin/magi config set identity.active_agent bob
+~/.local/bin/magi join --invite <token>
+~/.local/bin/magi send alice "hello from bob"
 ```
 
-To rename a team (moves the team dir, updates `config.json`, migrates messages):
+## Commands
 
 ```bash
-~/.agents/skills/agmsg/scripts/rename-team.sh oldteam newteam
+magi                          # interactive mode
+magi redis start|status|stop
+magi team create <team>
+magi team list
+magi team members [--team <team>]
+magi invite create --team <team> [--ttl 24h]
+magi invite list --team <team>
+magi invite revoke <invite_id>
+magi join --invite <token>
+magi send <agent> <message>
+magi inbox
+magi history [--team <team>] [--agent <agent>]
+magi watch [--format line|json]
+magi ssh start|status|stop
+magi config get <key>
+magi config set <key> <value>
 ```
 
-**Effect on existing members:** all agents in the team keep their registrations
-and message history — only the team name changes. However, any session that has
-already cached the team name (e.g. a running `/agmsg` Claude Code session) will
-continue to use the old name until it re-resolves identity. After a rename,
-each member should re-run `whoami` from their project to pick up the new name:
+## Redis
 
-```bash
-~/.agents/skills/agmsg/scripts/whoami.sh "$(pwd)" claude-code
-```
+`magi redis start` prefers Docker and falls back to `redis-server` when Docker
+is unavailable. Redis auth is generated and written into `~/.magi/config.toml`;
+passwords are not passed on the command line.
 
-### Multiple identities
+## Legacy Scripts
 
-You can join the same project with multiple agent names (e.g. `cc` and `reviewer`). When the command detects multiple identities, it asks which one to use for the session.
-
-```bash
-~/.agents/skills/agmsg/scripts/join.sh myteam cc claude-code /path/to/project
-~/.agents/skills/agmsg/scripts/join.sh myteam reviewer claude-code /path/to/project
-```
-
-### Multiple roles per project (`actas` / `drop`)
-
-Same project, same agent type, different role — for example a `tech-lead` identity for architecture reviews and a `biz-analyst` identity for requirements work, both living on top of the same workspace. Toolset and assets are shared; only the role differs.
-
-```
-/agmsg actas tech-lead     # switch to tech-lead (creates it if not yet registered)
-/agmsg actas biz-analyst   # switch to biz-analyst
-/agmsg drop biz-analyst    # remove the role from this project
-```
-
-Mechanics:
-
-- `actas <name>` is **exclusive**: switches both sending and receiving to `<name>`. The skill joins the role under your current team if needed, then TaskStops the running `agmsg inbox stream` Monitor and relaunches one filtered to `<name>` only (via `watch.sh`'s optional 4th argument). Messages addressed to other roles stop reaching the session until you `actas` again or end the session.
-- `drop <name>` removes only that role's registration for this project (via `reset.sh`). If the role is no longer registered anywhere, it's also dropped from the team config. If `<name>` was the currently-active role, the watcher is restarted in default mode (all roles registered for this project at relaunch time).
-- Switching is session-scoped state held by the agent. `/clear` or a new session resets back to the multiple-identities picker.
-
-#### Subscription model
-
-agmsg follows a **one CC session = one active role** model. Each watcher subscribes to a *static* set of identities decided at launch:
-
-- **Without `actas`**: the watcher subscribes to whichever `(team, agent)` pairs were registered for this `(project, agent_type)` at the moment `watch.sh` started. The set is *not* re-resolved later. A role joined mid-session via `actas` from another CC does *not* start arriving in CCs that were launched before it.
-- **After `actas <name>`**: the watcher is relaunched filtered to `<name>` only. Other registered roles stop arriving in this CC even if they pre-existed.
-
-This is intentional: it keeps each CC bound to one role's inbox, so a `tech-lead` window stays clear of `biz-analyst` traffic and vice versa — even when both roles are registered under the same project. To pick up a role added after a CC launched (without switching to it exclusively), restart the CC or `/clear` so SessionStart re-launches `watch.sh` with the fresh identity list.
-
-The send side mirrors this: every `send.sh` call from this CC uses the active role as the `from` agent, whether that's the implicit one (default) or the one set by the most recent `actas`.
-
-### Reusing the same identity across projects
-
-If you join the same team with the same agent name from another project, agmsg keeps the same identity and adds a registration record for the new project.
-
-```bash
-~/.agents/skills/agmsg/scripts/join.sh myteam alice claude-code /path/to/project-a
-~/.agents/skills/agmsg/scripts/join.sh myteam alice claude-code /path/to/project-b
-```
-
-If you want to clear the current project's registrations without leaving the team identity entirely:
-
-```bash
-~/.agents/skills/agmsg/scripts/reset.sh /path/to/project-b claude-code
-```
-
-## Delivery modes
-
-How incoming messages reach your agent. Pick one at first join via the prompt, or change it later with `/agmsg mode <name>`.
-
-| mode | mechanism | latency | who it's for |
-|---|---|---|---|
-| **`monitor`** (default on Claude Code) | SessionStart hook → Monitor tool → blocking SQLite stream | ~5s | Claude Code users wanting real-time push |
-| **`turn`** (default on Codex) | Stop hook fires `check-inbox.sh` between assistant turns | until your next interaction | Codex (no Monitor tool); Claude Code users on a quieter loop |
-| **`both`** | monitor primary, turn as per-session safety net | ~5s; falls back to turn-end on watcher failure | belt-and-suspenders |
-| **`off`** | no automatic delivery | manual `/agmsg` only | minimalists |
-
-### Picking a mode
-
-```
-/agmsg mode monitor    — switch this project to real-time push (Claude Code)
-/agmsg mode turn       — switch to between-turns checking
-/agmsg mode both       — monitor with turn as a safety net
-/agmsg mode off        — manual /agmsg only
-/agmsg mode            — show current mode
-```
-
-Settings are per-project. Each `<project>/.claude/settings.local.json` gets exactly the hooks the chosen mode needs — repeated `set` calls are idempotent.
-
-### Migrating from legacy `hook on/off`
-
-`hook on` is now a thin alias for `mode turn` (with a one-line deprecation hint). To switch to real-time push:
-
-```
-/agmsg mode monitor
-```
-
-The command updates `db/config.yaml`, rewrites the project's hook entries, and prints an `AGMSG-DIRECTIVE` that activates `monitor` in the current session — no agent restart needed.
-
-## Usage
-
-### Claude Code
-
-```
-/agmsg                                  — check inbox (all teams)
-/agmsg history                          — message history
-/agmsg team                             — list team members
-/agmsg send <agent> <message>           — send message
-/agmsg mode <monitor|turn|both|off>     — switch delivery mode
-/agmsg mode                             — show current mode
-/agmsg actas <name>                     — switch to another role in this project (create if needed)
-/agmsg drop <name>                      — remove a role from this project
-/agmsg hook on | off                    — legacy aliases (mode turn | off)
-/agmsg reset                            — clear current project registration
-```
-
-### Codex
-
-```
-$agmsg                          — or /skills → agmsg
-```
-
-Codex supports `mode turn` and `mode off` only — there's no Monitor tool to stream into.
-
-### Shell (any agent)
-
-```bash
-~/.agents/skills/<cmd>/scripts/send.sh <team> <from> <to> "<message>"
-~/.agents/skills/<cmd>/scripts/inbox.sh <team> <agent_id>
-~/.agents/skills/<cmd>/scripts/history.sh <team> [agent_id] [limit]
-~/.agents/skills/<cmd>/scripts/team.sh <team>
-~/.agents/skills/<cmd>/scripts/whoami.sh <project_path> <type>
-~/.agents/skills/<cmd>/scripts/delivery.sh set <mode> <type> <project_path>
-~/.agents/skills/<cmd>/scripts/delivery.sh status [<type> <project_path>]
-~/.agents/skills/<cmd>/scripts/reset.sh <project_path> <type> [agent_id]
-```
-
-`hook.sh on|off` still works as a legacy alias for `delivery.sh set turn|off` but prints a deprecation notice.
-
-## Update
-
-```bash
-cd agmsg
-git pull
-./install.sh --update
-```
-
-DB and team configs are preserved. Only scripts and assets are updated.
-
-## Uninstall
-
-```bash
-./uninstall.sh              # Interactive (confirms each step)
-./uninstall.sh --yes        # Remove everything
-./uninstall.sh --keep-data  # Remove skill but keep DB and teams
-```
-
-Auto-detects installed skill directories and cleans up: skill files, slash commands, hooks, AGENTS.md sections, and team configs.
-
-## Tests
-
-```bash
-bats tests/    # requires bats-core: brew install bats-core
-```
-
-## Architecture
-
-```
-~/.agents/skills/<cmd>/           # Folder name = command name
-├── SKILL.md                      # Skill definition (read by CC & Codex)
-├── agents/
-│   └── openai.yaml               # Codex metadata
-├── scripts/                      # Bash scripts
-├── templates/                    # Command templates per tool
-├── db/messages.db                # SQLite WAL-mode message store
-└── teams/                        # Team configs (self-contained)
-    └── <team>/
-        └── config.json
-```
-
-- **Storage**: Single SQLite file with WAL mode
-- **Concurrency**: Multiple readers + 1 writer, no conflicts
-- **Dependencies**: bash, sqlite3 (no python3 required)
-- **Auto detection**: Stop hook checks inbox after each response (60s cooldown)
-- **No daemon**: Direct filesystem access
-- **No network**: Everything local
-
-## Contributing
-
-See [Design & Architecture](docs/design.md) for developer documentation — identity model, data storage, hook system, and script responsibilities.
-
-## License
-
-MIT
+The old Bash/SQLite scripts are retired. They now exit with a clear retirement
+notice and point callers to the Rust CLI.
