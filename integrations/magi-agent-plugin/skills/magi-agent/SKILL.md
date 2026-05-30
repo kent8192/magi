@@ -35,6 +35,10 @@ magi send ──▶ Redis Pub/Sub ──▶ `magi watch --format json`
 - `bin/magi-agentd` — lifecycle controller (`setup|start|stop|restart|status|logs|run`).
 - `lib/magi_agent_bridge.py` — the asyncio bridge built on `claude-agent-sdk`.
 - `commands/magi-system.md` — the `/magi-system` slash command wrapping the controller.
+- `hooks/magi-session-start.sh` — a SessionStart hook that reports the magi system
+  state at startup (and optionally boots Redis/bridge via `MAGI_AGENT_AUTOSTART_REDIS`
+  / `MAGI_AGENT_AUTOSTART_BRIDGE`).
+- Sibling skill `magi-messaging` — manual magi CLI usage (send/inbox/history) in-session.
 
 Runtime state (virtualenv, pid, log) lives under
 `${XDG_STATE_HOME:-~/.local/state}/magi-agent/`, never inside the plugin.

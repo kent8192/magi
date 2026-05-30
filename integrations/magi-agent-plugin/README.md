@@ -41,15 +41,33 @@ Or call the controller directly: `integrations/magi-agent-plugin/bin/magi-agentd
 ```
 magi-agent-plugin/
 ├── .claude-plugin/
-│   ├── plugin.json          # plugin manifest
-│   └── marketplace.json     # local dev marketplace ("magi-dev")
-├── bin/magi-agentd          # lifecycle controller (setup/start/stop/status/logs/run)
+│   ├── plugin.json              # plugin manifest
+│   └── marketplace.json         # local dev marketplace ("magi-dev")
+├── bin/magi-agentd              # lifecycle controller (setup/start/stop/status/logs/run)
 ├── lib/
-│   ├── magi_agent_bridge.py # the asyncio bridge (claude-agent-sdk)
+│   ├── magi_agent_bridge.py     # the asyncio bridge (claude-agent-sdk)
 │   └── requirements.txt
-├── commands/magi-system.md  # /magi-system slash command
-└── skills/magi-agent/SKILL.md
+├── commands/magi-system.md      # /magi-system slash command
+├── hooks/
+│   ├── hooks.json               # SessionStart hook registration
+│   └── magi-session-start.sh    # startup: report (and optionally boot) the magi system
+└── skills/
+    ├── magi-agent/SKILL.md      # the autonomous bridge
+    └── magi-messaging/SKILL.md  # manual magi CLI usage in-session
 ```
+
+## Startup hook
+
+On every Claude Code session start the plugin runs `hooks/magi-session-start.sh`,
+which detects the magi system state (Redis reachable? identity set? bridge up?)
+and injects a one-line status as session context. It is **report-only by
+default** — it never consumes your inbox and never boots anything unless you
+opt in:
+
+- `MAGI_AGENT_AUTOSTART_REDIS=1` — start managed Redis at session start if it is down.
+- `MAGI_AGENT_AUTOSTART_BRIDGE=1` — start the `/magi-system` bridge daemon at session start.
+
+If magi is not installed, the hook exits silently.
 
 ## Safety
 
