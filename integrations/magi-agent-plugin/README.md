@@ -14,7 +14,7 @@ delivery is instant rather than polled.
 - [`magi`](https://github.com/kent8192/magi) installed and a reachable Redis
   (`magi redis status`), with `identity.active_agent` set.
 - The `claude` CLI on `PATH` (the SDK drives it; uses your existing Claude auth).
-- Python ≥ 3.10 available to build an isolated virtualenv (no global Python is touched).
+- Node.js ≥ 22.18 (runs the TypeScript bridge via native type-stripping) and npm.
 
 ## Install (local dev marketplace)
 
@@ -27,7 +27,7 @@ delivery is instant rather than polled.
 ## Use
 
 ```bash
-/magi-system setup     # one-time: build venv + install claude-agent-sdk
+/magi-system setup     # one-time: npm install the Claude Agent SDK
 /magi-system start     # start the daemon (auto-replies to messages addressed to you)
 /magi-system status
 /magi-system logs
@@ -45,8 +45,9 @@ magi-agent-plugin/
 │   └── marketplace.json         # local dev marketplace ("magi-dev")
 ├── bin/magi-agentd              # lifecycle controller (setup/start/stop/status/logs/run)
 ├── lib/
-│   ├── magi_agent_bridge.py     # the asyncio bridge (claude-agent-sdk)
-│   └── requirements.txt
+│   ├── magi_agent_bridge.ts     # the bridge (TypeScript, run via Node type-stripping)
+│   ├── package.json             # @anthropic-ai/claude-agent-sdk dependency
+│   └── node_modules/            # installed by `setup` (gitignored)
 ├── commands/magi-system.md      # /magi-system slash command
 ├── hooks/
 │   ├── hooks.json               # SessionStart hook registration

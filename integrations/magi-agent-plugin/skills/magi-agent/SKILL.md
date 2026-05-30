@@ -21,7 +21,7 @@ makes delivery instant.
 magi send ──▶ Redis Pub/Sub ──▶ `magi watch --format json`
                                         │ (NDJSON line per message)
                                         ▼
-                              magi_agent_bridge.py
+                              magi_agent_bridge.ts
                                         │  persistent ClaudeSDKClient (per peer)
                                         ▼
                               assistant reply text
@@ -33,15 +33,15 @@ magi send ──▶ Redis Pub/Sub ──▶ `magi watch --format json`
 ## Components
 
 - `bin/magi-agentd` — lifecycle controller (`setup|start|stop|restart|status|logs|run`).
-- `lib/magi_agent_bridge.py` — the asyncio bridge built on `claude-agent-sdk`.
+- `lib/magi_agent_bridge.ts` — the bridge (TypeScript) built on `@anthropic-ai/claude-agent-sdk`, run directly by Node's native type-stripping.
 - `commands/magi-system.md` — the `/magi-system` slash command wrapping the controller.
 - `hooks/magi-session-start.sh` — a SessionStart hook that reports the magi system
   state at startup (and optionally boots Redis/bridge via `MAGI_AGENT_AUTOSTART_REDIS`
   / `MAGI_AGENT_AUTOSTART_BRIDGE`).
 - Sibling skill `magi-messaging` — manual magi CLI usage (send/inbox/history) in-session.
 
-Runtime state (virtualenv, pid, log) lives under
-`${XDG_STATE_HOME:-~/.local/state}/magi-agent/`, never inside the plugin.
+The Claude Agent SDK is installed into `lib/node_modules` by `setup`; the daemon's
+pid and log live under `${XDG_STATE_HOME:-~/.local/state}/magi-agent/`.
 
 ## Quick start
 
@@ -50,7 +50,7 @@ magi redis start                                   # backend must be reachable
 magi config set identity.active_agent <you>        # the agent the bridge speaks as
 magi config set identity.active_team <team>
 
-/magi-system setup     # one-time: builds an isolated venv + installs the SDK
+/magi-system setup     # one-time: npm installs the Claude Agent SDK into lib/
 /magi-system start     # launches the daemon
 /magi-system status    # running? identity? recent log
 /magi-system stop
@@ -98,8 +98,8 @@ turn's response boundary is unambiguous.
 | `MAGI_AGENT_MAX_PEERS` | `8` | Max concurrent persistent peer sessions |
 | `MAGI_AGENT_CWD` | `~` | Working directory for the Claude session |
 | `MAGI_AGENT_SETTING_SOURCES` | (lean, none) | Comma list of `user,project,local` settings to load; default is none so the bot ignores your global CLAUDE.md |
-| `MAGI_AGENT_PYTHON` | autodetect | Interpreter used to build the venv (needs ≥3.10) |
-| `MAGI_AGENT_STATE_DIR` | `~/.local/state/magi-agent` | Where venv/pid/log live |
+| `MAGI_AGENT_NODE` | `node` | Node binary used to run the bridge (needs ≥22.18) |
+| `MAGI_AGENT_STATE_DIR` | `~/.local/state/magi-agent` | Where the daemon pid/log live |
 
 Enabling tools is unattended automation with real side effects. If you opt in,
 prefer a narrow `MAGI_AGENT_ALLOWED_TOOLS` set and a non-interactive

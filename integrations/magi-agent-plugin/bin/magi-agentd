@@ -3,7 +3,7 @@
 # magi-agentd — lifecycle controller for the magi-agent bridge (Plan A).
 #
 # Subcommands:
-#   setup    Create an isolated virtualenv and install the Claude Agent SDK.
+#   setup    Install the Claude Agent SDK (npm) into the plugin's lib/.
 #   start    Launch the bridge as a background daemon.
 #   stop     Stop the running daemon.
 #   restart  stop + start.
@@ -11,20 +11,19 @@
 #   logs     Follow the daemon log (Ctrl-C to stop following).
 #   run      Run the bridge in the foreground (for debugging).
 #
-# Runtime state (pid, log, venv) lives outside the plugin directory so the
-# installed plugin stays read-only and portable:
+# The bridge is a TypeScript file executed by Node's native type-stripping
+# (Node >= 22.18). Runtime state (pid, log) lives outside the plugin:
 #   ${MAGI_AGENT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/magi-agent}
 set -euo pipefail
 
 # Resolve the plugin root from this script's location (bin/ -> plugin root).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BRIDGE="$PLUGIN_ROOT/lib/magi_agent_bridge.py"
-REQUIREMENTS="$PLUGIN_ROOT/lib/requirements.txt"
+LIB_DIR="$PLUGIN_ROOT/lib"
+BRIDGE="$LIB_DIR/magi_agent_bridge.ts"
+SDK_DIR="$LIB_DIR/node_modules/@anthropic-ai/claude-agent-sdk"
 
 STATE_DIR="${MAGI_AGENT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/magi-agent}"
-VENV="$STATE_DIR/venv"
-PY="$VENV/bin/python"
 PID_FILE="$STATE_DIR/agentd.pid"
 LOG_FILE="$STATE_DIR/agentd.log"
 
@@ -32,28 +31,21 @@ mkdir -p "$STATE_DIR"
 
 err() { printf '%s\n' "$*" >&2; }
 
-# Pick a Python interpreter >= 3.10 for the virtualenv.
-find_python() {
-  local candidates=("${MAGI_AGENT_PYTHON:-}" python3.12 python3.13 python3.11 python3.10 python3)
-  local c
-  for c in "${candidates[@]}"; do
-    [ -n "$c" ] || continue
-    if command -v "$c" >/dev/null 2>&1; then
-      if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
-        command -v "$c"
-        return 0
-      fi
-    fi
-  done
-  return 1
+NODE_BIN="${MAGI_AGENT_NODE:-node}"
+
+# Require Node >= 22.18 (stable native TypeScript type-stripping).
+check_node() {
+  command -v "$NODE_BIN" >/dev/null 2>&1 || { err "magi-agent: '$NODE_BIN' not found on PATH (set MAGI_AGENT_NODE)."; return 1; }
+  "$NODE_BIN" -e 'const [maj,min]=process.versions.node.split(".").map(Number); process.exit((maj>22||(maj===22&&min>=18))?0:1)' 2>/dev/null \
+    || { err "magi-agent: Node >= 22.18 required for TypeScript execution (found $("$NODE_BIN" -v))."; return 1; }
 }
 
-ensure_venv() {
-  if [ -x "$PY" ] && "$PY" -c 'import claude_agent_sdk' >/dev/null 2>&1; then
-    return 0
+ensure_ready() {
+  check_node || return 1
+  if [ ! -d "$SDK_DIR" ]; then
+    err "magi-agent: dependencies not installed; run 'magi-agentd setup' first."
+    return 1
   fi
-  err "magi-agent: runtime not ready; run 'magi-agentd setup' first."
-  return 1
 }
 
 is_running() {
@@ -65,34 +57,28 @@ is_running() {
 }
 
 cmd_setup() {
-  local py
-  if ! py="$(find_python)"; then
-    err "magi-agent: no Python >= 3.10 found. Set MAGI_AGENT_PYTHON to one."
-    exit 1
-  fi
-  echo "Using interpreter: $py ($("$py" --version 2>&1))"
-  if [ ! -x "$PY" ]; then
-    echo "Creating virtualenv at $VENV"
-    "$py" -m venv "$VENV"
-  fi
-  "$PY" -m pip install --quiet --upgrade pip
-  echo "Installing dependencies from $REQUIREMENTS"
-  "$PY" -m pip install --quiet -r "$REQUIREMENTS"
-  "$PY" -c 'import claude_agent_sdk as m; print("claude-agent-sdk", getattr(m, "__version__", "?"))'
+  check_node || exit 1
+  command -v npm >/dev/null 2>&1 || { err "magi-agent: npm not found on PATH."; exit 1; }
+  echo "Node: $("$NODE_BIN" -v)    npm: $(npm -v)"
+  echo "Installing dependencies into $LIB_DIR ..."
+  ( cd "$LIB_DIR" && npm install --no-audit --no-fund )
+  "$NODE_BIN" --input-type=module -e \
+    "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log('claude-agent-sdk: import OK'))" \
+    2>/dev/null \
+    || { cd "$LIB_DIR" && "$NODE_BIN" --input-type=module -e "import('@anthropic-ai/claude-agent-sdk').then(()=>console.log('claude-agent-sdk: import OK (from lib)'))"; }
   echo "Setup complete."
 }
 
 cmd_start() {
-  ensure_venv || exit 1
+  ensure_ready || exit 1
   if is_running; then
     echo "magi-agent already running (pid $(cat "$PID_FILE"))."
     return 0
   fi
-  # Detach the bridge; it logs to $LOG_FILE and writes its own pid file.
-  nohup "$PY" "$BRIDGE" >>"$LOG_FILE" 2>&1 &
+  # Detach the bridge; it logs to $LOG_FILE and we record its pid.
+  nohup "$NODE_BIN" "$BRIDGE" >>"$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" >"$PID_FILE"
-  # Give it a moment to fail fast on misconfiguration.
   sleep 1
   if is_running; then
     echo "magi-agent started (pid $pid). Logs: $LOG_FILE"
@@ -136,7 +122,8 @@ cmd_status() {
     echo "  self  : $("$magi" config get identity.active_agent 2>/dev/null)"
     echo "  team  : $("$magi" config get identity.active_team 2>/dev/null)"
   fi
-  echo "  venv  : $([ -x "$PY" ] && echo ready || echo 'not set up')"
+  echo "  node  : $(command -v "$NODE_BIN" >/dev/null 2>&1 && "$NODE_BIN" -v || echo 'not found')"
+  echo "  deps  : $([ -d "$SDK_DIR" ] && echo ready || echo 'not set up')"
   echo "  log   : $LOG_FILE"
   if [ -f "$LOG_FILE" ]; then
     echo "  --- last 10 log lines ---"
@@ -150,8 +137,8 @@ cmd_logs() {
 }
 
 cmd_run() {
-  ensure_venv || exit 1
-  exec "$PY" "$BRIDGE"
+  ensure_ready || exit 1
+  exec "$NODE_BIN" "$BRIDGE"
 }
 
 usage() {

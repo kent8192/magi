@@ -12,6 +12,7 @@
     "redis",
     "agent",
     "messaging",
-    "claude-agent-sdk"
+    "claude-agent-sdk",
+    "typescript"
   ]
 }
