@@ -1,0 +1,18 @@
+# Default owner for everything.
+* @kent8192
+
+# Repository automation.
+/.github/ @kent8192
+
+# Runtime scripts and installer surface.
+/scripts/ @kent8192
+/install.sh @kent8192
+/setup.sh @kent8192
+/uninstall.sh @kent8192
+
+# Tests and user-facing documentation.
+/tests/ @kent8192
+/templates/ @kent8192
+/README.md @kent8192
+/docs/ @kent8192
+/SKILL.md @kent8192
