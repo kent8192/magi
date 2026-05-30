@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tokio::process::Command;
 
@@ -71,14 +71,58 @@ pub async fn status() -> Result<()> {
 pub async fn stop() -> Result<()> {
     let paths = ConfigPaths::from_env()?;
     let plan = build_ssh_stop_plan(&paths);
-    let pid = fs::read_to_string(&plan.pid_file)?;
-    let status = Command::new(&plan.program).arg(pid.trim()).status().await?;
+
+    let contents = match fs::read_to_string(&plan.pid_file) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            println!("ssh tunnel is not running; nothing to stop");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    // Validate the pid as a positive integer before it is ever passed to
+    // `kill`; an unvalidated value such as `-1` would otherwise be interpreted
+    // as a signal/target selector rather than a process id.
+    let Some(pid) = crate::proc::parse_pid_file_contents(&contents)? else {
+        println!(
+            "ssh tunnel pid file at {} is empty; nothing to stop",
+            plan.pid_file.display()
+        );
+        return Ok(());
+    };
+
+    // Confirm the recorded pid still belongs to an ssh process. A stale pid
+    // file naming a reused pid must not be allowed to terminate an unrelated
+    // process.
+    match crate::proc::executable_name(pid).await? {
+        None => {
+            crate::proc::remove_file_if_exists(&plan.pid_file)?;
+            println!(
+                "ssh tunnel pid {pid} from {} is not running; removed stale pid file",
+                plan.pid_file.display()
+            );
+            return Ok(());
+        }
+        Some(executable) if !crate::proc::executable_basename_is(&executable, "ssh") => {
+            return Err(MagiError::CommandFailed(format!(
+                "pid {pid} from {} is `{executable}`, not ssh; refusing to kill",
+                plan.pid_file.display()
+            )));
+        }
+        Some(_) => {}
+    }
+
+    let status = Command::new(&plan.program)
+        .arg(pid.to_string())
+        .status()
+        .await?;
     if !status.success() {
         return Err(MagiError::CommandFailed(format!(
             "kill failed with status {status}"
         )));
     }
-    remove_file_if_exists(&plan.pid_file)?;
+    crate::proc::remove_file_if_exists(&plan.pid_file)?;
     println!("ssh tunnel stopped");
     Ok(())
 }
@@ -119,12 +163,4 @@ pub fn build_ssh_stop_plan(paths: &ConfigPaths) -> SshStopPlan {
 
 pub fn ssh_pid_file(paths: &ConfigPaths) -> PathBuf {
     paths.run_dir.join("ssh-tunnel.pid")
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
