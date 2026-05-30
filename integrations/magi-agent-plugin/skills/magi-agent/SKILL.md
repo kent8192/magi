@@ -17,7 +17,7 @@ SDK conversation** as a new user turn. The assistant's reply is sent back to the
 originating agent through the magi CLI. No polling — magi's Redis Pub/Sub wakeup
 makes delivery instant.
 
-```
+```text
 magi send ──▶ Redis Pub/Sub ──▶ `magi watch --format json`
                                         │ (NDJSON line per message)
                                         ▼
@@ -74,9 +74,11 @@ turn's response boundary is unambiguous.
   default). Set `team` to also handle messages addressed to the active team.
 - **Sender allowlist:** `MAGI_AGENT_ALLOW_FROM=alice,bob` restricts who can drive
   the agent.
-- **Tools off by default:** `allowed_tools=[]` — the agent only converses and never
-  runs commands unattended. Enable explicitly (see below) only when you trust the
-  senders and understand the risk.
+- **Tools off by default (enforced):** in the default permission mode the bridge
+  installs a deny-by-default `can_use_tool` guard, so any tool not listed in
+  `MAGI_AGENT_ALLOWED_TOOLS` is denied immediately — the agent only converses and
+  an unattended turn can never hang waiting for interactive approval. Enable tools
+  explicitly (see below) only when you trust the senders and understand the risk.
 
 ## Configuration (environment variables)
 
@@ -90,7 +92,7 @@ turn's response boundary is unambiguous.
 | `MAGI_AGENT_ALLOW_FROM` | (all) | Comma list of senders allowed to drive the agent |
 | `MAGI_AGENT_SYSTEM_PROMPT` | built-in | System prompt for the responder |
 | `MAGI_AGENT_ALLOWED_TOOLS` | (none) | Comma list of tools to enable (opt-in) |
-| `MAGI_AGENT_PERMISSION_MODE` | `default` | SDK permission mode (`acceptEdits`, `bypassPermissions`, …) — only relevant when tools are enabled |
+| `MAGI_AGENT_PERMISSION_MODE` | `default` | SDK permission mode. In `default` the deny-by-default tool guard is active; an explicit mode (`acceptEdits`, `bypassPermissions`, …) disables the guard and is the user's opt-in |
 | `MAGI_AGENT_MODEL` | SDK default | Model id override |
 | `MAGI_AGENT_MAX_REPLY_CHARS` | `4000` | Truncate outgoing replies to this length |
 | `MAGI_AGENT_MAX_PEERS` | `8` | Max concurrent persistent peer sessions |

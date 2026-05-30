@@ -48,6 +48,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    PermissionResultAllow,
+    PermissionResultDeny,
     TextBlock,
 )
 
@@ -175,6 +177,32 @@ def _load_config() -> Config:
     )
 
 
+def _make_permission_guard(allowed_tools: list[str]):
+    """Return a can_use_tool callback that denies any tool not explicitly allowed.
+
+    `allowed_tools=[]` only PRE-approves the listed tools; it does not deny the
+    rest. Under `permission_mode="default"` with no callback, an unlisted tool
+    would fall through to the interactive approval flow and an unattended daemon
+    would hang. This deny-by-default guard makes "tools off by default" an
+    enforced invariant: explicitly-allowed tools run, everything else is denied
+    immediately (no prompt, no hang).
+    """
+
+    allowed = set(allowed_tools)
+
+    async def can_use_tool(tool_name, tool_input, context):  # noqa: ANN001 - SDK callback
+        if tool_name in allowed:
+            return PermissionResultAllow()
+        return PermissionResultDeny(
+            message=(
+                f"magi-agent: tool '{tool_name}' is not permitted for this "
+                "unattended responder. Add it to MAGI_AGENT_ALLOWED_TOOLS to enable."
+            )
+        )
+
+    return can_use_tool
+
+
 class PeerSessions:
     """Lazily-created, LRU-capped pool of persistent Claude clients keyed by peer."""
 
@@ -184,7 +212,7 @@ class PeerSessions:
 
     def _new_options(self) -> ClaudeAgentOptions:
         # Build options fresh per client so each peer is an independent session.
-        return ClaudeAgentOptions(
+        options = ClaudeAgentOptions(
             system_prompt=self._config.system_prompt,
             allowed_tools=self._config.allowed_tools,
             permission_mode=self._config.permission_mode,  # type: ignore[arg-type]
@@ -193,6 +221,13 @@ class PeerSessions:
             cli_path=self._config.cli_path,
             setting_sources=self._config.setting_sources,  # type: ignore[arg-type]
         )
+        # In the default permission mode, install a deny-by-default guard so an
+        # unattended turn can never hang waiting for interactive tool approval.
+        # Explicit modes (acceptEdits/bypassPermissions/...) are the user's
+        # deliberate opt-in and are left untouched.
+        if self._config.permission_mode == "default":
+            options.can_use_tool = _make_permission_guard(self._config.allowed_tools)
+        return options
 
     async def get(self, peer: str) -> ClaudeSDKClient:
         client = self._clients.get(peer)
@@ -291,22 +326,37 @@ async def _worker(config: Config, sessions: PeerSessions, queue: "asyncio.Queue[
             queue.task_done()
 
 
-async def _reader(config: Config, queue: "asyncio.Queue[dict]", proc: asyncio.subprocess.Process) -> None:
-    """Read NDJSON lines from `magi watch` and enqueue ones we should handle."""
+async def _reader(
+    config: Config,
+    queue: "asyncio.Queue[dict]",
+    proc: asyncio.subprocess.Process,
+    stop: asyncio.Event,
+) -> None:
+    """Read NDJSON lines from `magi watch` and enqueue ones we should handle.
+
+    When the stream ends (e.g. `magi watch` exits because Redis became
+    unreachable), signal shutdown so the failure surfaces instead of the daemon
+    lingering "RUNNING" while silently processing nothing.
+    """
     assert proc.stdout is not None
-    async for raw in proc.stdout:
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            _log(f"skipping non-JSON line: {line[:120]!r}")
-            continue
-        if _should_handle(config, msg):
-            await queue.put(msg)
-        else:
-            _log(f"ignored id={msg.get('id')} from={msg.get('from')} to={msg.get('to')}")
+    try:
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                _log(f"skipping non-JSON line: {line[:120]!r}")
+                continue
+            if _should_handle(config, msg):
+                await queue.put(msg)
+            else:
+                _log(f"ignored id={msg.get('id')} from={msg.get('from')} to={msg.get('to')}")
+    finally:
+        rc = proc.returncode
+        _log(f"`magi watch` stream ended (exit={rc}); initiating shutdown")
+        stop.set()
 
 
 async def run() -> int:
@@ -326,7 +376,10 @@ async def run() -> int:
         "--format",
         "json",
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        # Inherit stderr (the controller already redirects it to the daemon log)
+        # rather than an undrained PIPE that could fill its ~64 KB buffer and
+        # block the child, stalling message delivery.
+        stderr=None,
     )
 
     stop = asyncio.Event()
@@ -338,7 +391,7 @@ async def run() -> int:
             pass
 
     worker_task = asyncio.create_task(_worker(config, sessions, queue))
-    reader_task = asyncio.create_task(_reader(config, queue, proc))
+    reader_task = asyncio.create_task(_reader(config, queue, proc, stop))
 
     await stop.wait()
     _log("shutdown requested; cleaning up")
