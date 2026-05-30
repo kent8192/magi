@@ -1,0 +1,7 @@
+# Node dependencies installed by `magi-agentd setup` (committed: package.json + lock)
+node_modules/
+
+# Local runtime state should never live here, but ignore it defensively
+# in case a user points MAGI_AGENT_STATE_DIR at the plugin directory.
+*.pid
+*.log
