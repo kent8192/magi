@@ -45,6 +45,11 @@ end
 
 local used_count = tonumber(redis.call("HGET", invite_key, "used_count") or "0")
 local max_uses = tonumber(redis.call("HGET", invite_key, "max_uses") or "0")
+if not used_count or not max_uses then
+  -- Corrupt (non-numeric) counter fields: fail closed rather than error on
+  -- the comparison below. Matches the documented {"invalid"} contract above.
+  return {"invalid"}
+end
 if max_uses > 0 and used_count >= max_uses then
   return {"max_uses"}
 end
