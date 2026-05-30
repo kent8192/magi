@@ -62,15 +62,22 @@ if expires_at <= tonumber(ARGV[2]) then
   return {"expired"}
 end
 
--- Read use counters, defaulting to "0" when the field is absent so a fresh
+-- Read the raw use-counter fields, defaulting to "0" when absent so a fresh
 -- invite reads as 0 uses with an unlimited (0) cap.
-local used_count = tonumber(redis.call("HGET", invite_key, "used_count") or "0")
-local max_uses = tonumber(redis.call("HGET", invite_key, "max_uses") or "0")
-if not used_count or not max_uses then
-  -- Corrupt (non-numeric) counter fields: fail closed rather than error on
-  -- the comparison below. Matches the documented {"invalid"} contract above.
+local used_count_raw = redis.call("HGET", invite_key, "used_count") or "0"
+local max_uses_raw = redis.call("HGET", invite_key, "max_uses") or "0"
+-- Counters must be non-negative decimal integers (used_count is only ever
+-- written via HINCRBY). Reject any other shape as corrupt and fail closed,
+-- matching the documented {"invalid"} contract above. A bare tonumber()
+-- guard is insufficient: it would accept "1.5", "-5", "0x10", "1e3", and
+-- leading/trailing whitespace, so corrupt counters could slip past.
+if not string.match(used_count_raw, "^%d+$") or not string.match(max_uses_raw, "^%d+$") then
   return {"invalid"}
 end
+-- Both fields are validated integer strings; convert them for numeric comparison.
+local used_count = tonumber(used_count_raw)
+local max_uses = tonumber(max_uses_raw)
+
 -- max_uses == 0 means "unlimited"; only enforce the cap when it is positive.
 -- Early return: the invite has already reached its use limit.
 if max_uses > 0 and used_count >= max_uses then
