@@ -1,0 +1,13 @@
+{
+  "name": "magi-dev",
+  "owner": {
+    "name": "kent8192"
+  },
+  "plugins": [
+    {
+      "name": "magi-agent",
+      "source": "./",
+      "description": "Event-driven bridge: incoming magi messages become new input for a persistent Claude session, which auto-replies via the magi CLI."
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Runtime dependency for the magi-agent bridge.
+# Pinned to a known-good minor; bump deliberately after testing.
+claude-agent-sdk>=0.2.87,<0.3

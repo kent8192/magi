@@ -1,0 +1,17 @@
+{
+  "name": "magi-agent",
+  "version": "0.1.0",
+  "description": "Event-driven bridge that delivers incoming magi messages into a persistent Claude Agent SDK session and auto-replies through the magi CLI.",
+  "author": {
+    "name": "kent8192"
+  },
+  "homepage": "https://github.com/kent8192/magi",
+  "license": "MIT",
+  "keywords": [
+    "magi",
+    "redis",
+    "agent",
+    "messaging",
+    "claude-agent-sdk"
+  ]
+}

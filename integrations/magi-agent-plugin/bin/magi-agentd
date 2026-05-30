@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# magi-agentd — lifecycle controller for the magi-agent bridge (Plan A).
+#
+# Subcommands:
+#   setup    Create an isolated virtualenv and install the Claude Agent SDK.
+#   start    Launch the bridge as a background daemon.
+#   stop     Stop the running daemon.
+#   restart  stop + start.
+#   status   Show daemon state, identity, and the tail of the log.
+#   logs     Follow the daemon log (Ctrl-C to stop following).
+#   run      Run the bridge in the foreground (for debugging).
+#
+# Runtime state (pid, log, venv) lives outside the plugin directory so the
+# installed plugin stays read-only and portable:
+#   ${MAGI_AGENT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/magi-agent}
+set -euo pipefail
+
+# Resolve the plugin root from this script's location (bin/ -> plugin root).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BRIDGE="$PLUGIN_ROOT/lib/magi_agent_bridge.py"
+REQUIREMENTS="$PLUGIN_ROOT/lib/requirements.txt"
+
+STATE_DIR="${MAGI_AGENT_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/magi-agent}"
+VENV="$STATE_DIR/venv"
+PY="$VENV/bin/python"
+PID_FILE="$STATE_DIR/agentd.pid"
+LOG_FILE="$STATE_DIR/agentd.log"
+
+mkdir -p "$STATE_DIR"
+
+err() { printf '%s\n' "$*" >&2; }
+
+# Pick a Python interpreter >= 3.10 for the virtualenv.
+find_python() {
+  local candidates=("${MAGI_AGENT_PYTHON:-}" python3.12 python3.13 python3.11 python3.10 python3)
+  local c
+  for c in "${candidates[@]}"; do
+    [ -n "$c" ] || continue
+    if command -v "$c" >/dev/null 2>&1; then
+      if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>/dev/null; then
+        command -v "$c"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+ensure_venv() {
+  if [ -x "$PY" ] && "$PY" -c 'import claude_agent_sdk' >/dev/null 2>&1; then
+    return 0
+  fi
+  err "magi-agent: runtime not ready; run 'magi-agentd setup' first."
+  return 1
+}
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  local pid
+  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+cmd_setup() {
+  local py
+  if ! py="$(find_python)"; then
+    err "magi-agent: no Python >= 3.10 found. Set MAGI_AGENT_PYTHON to one."
+    exit 1
+  fi
+  echo "Using interpreter: $py ($("$py" --version 2>&1))"
+  if [ ! -x "$PY" ]; then
+    echo "Creating virtualenv at $VENV"
+    "$py" -m venv "$VENV"
+  fi
+  "$PY" -m pip install --quiet --upgrade pip
+  echo "Installing dependencies from $REQUIREMENTS"
+  "$PY" -m pip install --quiet -r "$REQUIREMENTS"
+  "$PY" -c 'import claude_agent_sdk as m; print("claude-agent-sdk", getattr(m, "__version__", "?"))'
+  echo "Setup complete."
+}
+
+cmd_start() {
+  ensure_venv || exit 1
+  if is_running; then
+    echo "magi-agent already running (pid $(cat "$PID_FILE"))."
+    return 0
+  fi
+  # Detach the bridge; it logs to $LOG_FILE and writes its own pid file.
+  nohup "$PY" "$BRIDGE" >>"$LOG_FILE" 2>&1 &
+  local pid=$!
+  echo "$pid" >"$PID_FILE"
+  # Give it a moment to fail fast on misconfiguration.
+  sleep 1
+  if is_running; then
+    echo "magi-agent started (pid $pid). Logs: $LOG_FILE"
+  else
+    err "magi-agent failed to start; recent log:"
+    tail -n 20 "$LOG_FILE" >&2 || true
+    rm -f "$PID_FILE"
+    exit 1
+  fi
+}
+
+cmd_stop() {
+  if ! is_running; then
+    echo "magi-agent is not running."
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$PID_FILE")"
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    is_running || break
+    sleep 0.5
+  done
+  if is_running; then
+    err "magi-agent did not stop gracefully; sending SIGKILL."
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+  echo "magi-agent stopped."
+}
+
+cmd_status() {
+  if is_running; then
+    echo "magi-agent: RUNNING (pid $(cat "$PID_FILE"))"
+  else
+    echo "magi-agent: stopped"
+  fi
+  local magi="${MAGI_BIN:-$(command -v magi || true)}"
+  if [ -n "$magi" ]; then
+    echo "  self  : $("$magi" config get identity.active_agent 2>/dev/null)"
+    echo "  team  : $("$magi" config get identity.active_team 2>/dev/null)"
+  fi
+  echo "  venv  : $([ -x "$PY" ] && echo ready || echo 'not set up')"
+  echo "  log   : $LOG_FILE"
+  if [ -f "$LOG_FILE" ]; then
+    echo "  --- last 10 log lines ---"
+    tail -n 10 "$LOG_FILE" | sed 's/^/  /'
+  fi
+}
+
+cmd_logs() {
+  [ -f "$LOG_FILE" ] || { echo "no log yet at $LOG_FILE"; return 0; }
+  tail -n "${1:-40}" -f "$LOG_FILE"
+}
+
+cmd_run() {
+  ensure_venv || exit 1
+  exec "$PY" "$BRIDGE"
+}
+
+usage() {
+  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+  local sub="${1:-}"
+  shift || true
+  case "$sub" in
+    setup)   cmd_setup "$@" ;;
+    start)   cmd_start "$@" ;;
+    stop)    cmd_stop "$@" ;;
+    restart) cmd_stop "$@"; cmd_start "$@" ;;
+    status)  cmd_status "$@" ;;
+    logs)    cmd_logs "$@" ;;
+    run)     cmd_run "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *) err "unknown subcommand: $sub"; usage; exit 2 ;;
+  esac
+}
+
+main "$@"
