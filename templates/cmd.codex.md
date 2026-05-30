@@ -6,11 +6,14 @@ description: Redis-backed cross-agent messaging for Codex and other CLI agents.
 Use `~/.agents/skills/__SKILL_NAME__/bin/magi` for all messaging operations.
 Do not read or edit `~/.magi` directly.
 
-Default action with no arguments:
+Recommended default action (non-interactive):
 
 ```bash
 ~/.agents/skills/__SKILL_NAME__/bin/magi inbox
 ```
+
+Running `magi` with no arguments starts an interactive REPL, which is not
+suitable for automated agents; always pass an explicit subcommand.
 
 Common actions:
 
